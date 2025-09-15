@@ -5,51 +5,48 @@ import cmath
 import random
 import config
 
+import chess
+
+from agents import *
+
 
 class Environment:
 
     def __init__(self,
-                 reward_func=None,
-                 max_num_actions=None,
+                 max_num_moves=None,
                 ):
-        self.reward_func = reward_func
-        self.fidelity = self.reward_func.fidelity
-        self.max_num_actions = max_num_actions
+        self.max_num_moves = max_num_moves
 
+        self.board = chess.Board()
         self.episode_count = 0
-        self.action_count = 0
-        self.action_history = []
-
-    def get_state(self):
-        """get state from current enviroment"""
-
-        pass
-        return state
-
-    def get_reward(self):
-        """get reward from current enviroment"""
-
-        reward, _ = self.reward_func(self)
-        return torch.tensor(reward, dtype=torch.float, device=config.device).view(1, 1)
+        self.move_count = 0
 
     def check_done(self):
-        _, done = self.reward_func(self)
+        if self.board.is_checkmate():
+            done = True
+            if self.board.outcome().winner:
+                reward =  1  # win
+            else:
+                reward = -1  # loss
+        elif self.board.is_stalemate():
+            done = True
+            reward = 0  # draw
+        else:
+            done = False
+            reward = 0
 
-        return bool(done)
+        return torch.tensor(reward, dtype=torch.float, device=config.device).view(1, 1), bool(done)
 
-    def step(self, action):
-        self.action_count += 1
-        self.action_history.append(action)
-        
-        return self.get_state(), self.get_reward(), self.check_done()
+    def step(self, move):
+        self.move_count += 1
+        self.move_history.append(str(move))
+        self.board.push(move)
+        self.board = self.board.mirror()
+        return self.board, *self.get_reward_and_done()
 
     def reset(self):
-        if input_state is None:
-            self.episode_count += 1
-            self.U_target, _ = self.data_generator(self, seed=seed)
-        else:
-            self.U_target = input_state
-
-        self.action_count = 0
-        self.action_history = []
+        self.episode_count += 1
+        self.move_count = 0
+        self.move_history = []
+        self.board = chess.Board()
         return self.get_state(), self.check_done()

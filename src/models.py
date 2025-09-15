@@ -147,23 +147,15 @@ class Model:
 
                 state = next_state
             
-            self.push_memory([state_list, action_list, next_state_list, reward_list, done_list], done)
+            self.push_memory([state_list, action_list, next_state_list, reward_list, done_list])
 
 
     @torch.compile
     def compute_loss(self):
-        if self.memory_pos.num_samples < self.batch_size_min:
+        if self.memory.num_samples < self.batch_size_min:
             return 0, None
-        state_batch, action_batch, next_state_batch, reward_batch, done_batch = self.memory_pos.sample()
-        
-        if self.split_memory and self.memory_neg.num_samples >= self.batch_size_min:
-            state_batch2, action_batch2, next_state_batch2, reward_batch2, done_batch2 = self.memory_neg.sample()
+        state_batch, action_batch, next_state_batch, reward_batch, done_batch = self.memory.sample()
 
-            state_batch = torch.cat([state_batch, state_batch2])
-            action_batch = torch.cat([action_batch, action_batch2])
-            next_state_batch = torch.cat([next_state_batch, next_state_batch2])
-            reward_batch = torch.cat([reward_batch, reward_batch2])
-            done_batch = torch.cat([done_batch, done_batch2])
 
         if random.random() < 0.5:
             online_net = self.agent.online_net1
