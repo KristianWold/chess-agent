@@ -75,7 +75,6 @@ class Model:
                  opt_list = None,
                  scaler = None,
                  criterion = nn.SmoothL1Loss(),
-                 split_memory = True
                  ):
 
         self.agent = agent
@@ -96,16 +95,12 @@ class Model:
 
         self.num_val = num_val
         self.criterion = criterion
-        self.split_memory = split_memory
 
         self.counter_episode = 0
 
         self.fidelity = environment.fidelity
-        self.val_set = [self.environment.data_generator(
-            environment, seed = 100000 + i, train=False)[0] for i in range(num_val)]
         
-        self.memory_pos = ReplayMemory(mem_capacity, batch_size, self.agent.state_dim)
-        self.memory_neg = ReplayMemory(mem_capacity, batch_size, self.agent.state_dim)
+        self.memory = ReplayMemory(mem_capacity, batch_size, self.agent.state_dim)
 
         self.opt_list = opt_list
         self.scaler = scaler
@@ -154,8 +149,6 @@ class Model:
             
             self.push_memory([state_list, action_list, next_state_list, reward_list, done_list], done)
 
-            if (i_episode + 1) % round(logger.sample_freq) == 0:
-                self.stats(logger, i_episode, loss, temp)
 
     @torch.compile
     def compute_loss(self):
@@ -209,100 +202,9 @@ class Model:
         return loss.detach()
 
     def push_memory(self, transition_list, done):
-        if self.split_memory:
-            if done:
-                for state, action, next_state, reward, done_tensor in zip(*transition_list):
-                    self.memory_pos.push(state, action, next_state, reward, done_tensor)
-            else:
-                for state, action, next_state, reward, done_tensor in zip(*transition_list):
-                    self.memory_neg.push(state, action, next_state, reward, done_tensor)
-        else:
-            for state, action, next_state, reward, done_tensor in zip(*transition_list):
-                self.memory_pos.push(state, action, next_state, reward, done_tensor)
+        for state, action, next_state, reward, done_tensor in zip(*transition_list):
+            self.memory.push(state, action, next_state, reward, done_tensor)
 
-
-    def stats(self, logger, i_episode, loss, temp):
-        if loss != 0:
-            loss = loss.item()
-
-            avg_fidelity = 0
-            avg_length = 0
-            avg_solved = 0
-
-            _, _, _, action_count_list, fidelity_list = self.evaluate(self.val_set)
-            action_count_list = np.array(action_count_list)
-            avg_fidelity = np.mean(fidelity_list)
-            avg_length = np.mean(action_count_list[action_count_list < self.environment.max_num_actions])
-            avg_solved = np.mean(action_count_list < self.environment.max_num_actions)
-
-            if not logger is None:
-                logger(avg_fidelity, avg_length, avg_solved, loss)
-            print(
-                f"episode: {i_episode+1}, fidelity: {avg_fidelity: .4f}, solved length: {avg_length: .4f}, solved: {avg_solved: .4f}, loss: {loss: .4f}, temp: {temp: .4f}")
-
-    def evaluate(self, input_state_list):
-        environment_list = []
-        state_list = []
-        done_list = []
-        U_target_list = []
-        U_current_list = []
-        action_history_list = []
-        action_count_list = []
-        for input_state in input_state_list:
-            environment_list.append(deepcopy(self.environment))
-
-
-        for environment, input_state in zip(environment_list, input_state_list):
-            state, done = environment.reset(input_state=input_state)
-            state_list.append(state)
-            done_list.append(done)
-
-        counter = 0
-        for _ in range(self.environment.max_num_actions):
-            counter += 1
-            for i, done in reversed(list(enumerate(done_list))):
-                if done:
-                    U_target_list.append(environment_list[i].U_target)
-                    U_current_list.append(environment_list[i].U_current)
-                    action_history_list.append(environment_list[i].action_history)
-                    action_count_list.append(environment_list[i].action_count)
-
-                    environment_list.pop(i)
-                    state_list.pop(i)
-                    done_list.pop(i)
-
-            if len(done_list)==0:
-                break
-
-            action_list = self.agent.select_action(torch.cat(state_list)).to("cpu").numpy()
-
-            state_list = []
-            done_list = []
-            for environment, action in zip(environment_list, action_list):
-                next_state, reward, done = environment.step(action[0])
-                state_list.append(next_state)
-                done_list.append(done)
-
-        for environment in environment_list:
-            U_target_list.append(environment.U_target)
-            U_current_list.append(environment.U_current)
-            action_history_list.append(environment.action_history)
-            action_count_list.append(environment.action_count)
-
-        action_count_list = np.array(action_count_list)
-
-        fidelity_list = []
-        for U_target, U_current in zip(U_target_list, U_current_list):
-            fidelity_list.append(self.fidelity(U_target, U_current))
-        fidelity_list = np.array(fidelity_list)
-
-        return U_target_list, U_current_list, action_history_list, action_count_list, fidelity_list
-
-
-    def set_data_generator(self, data_generator):
-        self.environment.data_generator = data_generator
-        self.val_set = [self.environment.data_generator(
-            self.environment, seed = 1000000 + i, train=False)[0] for i in range(self.num_val)]
 
     def set_temp(self, temp_constants):
         self.temp_start = temp_constants[0]
