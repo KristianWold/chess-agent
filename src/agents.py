@@ -11,13 +11,13 @@ import chess
 
 class NN(nn.Module):
 
-    def __init__(self, state_dim, action_dim, num_layers, scale):
+    def __init__(self):
         super(NN, self).__init__()
 
-        self.conv1 = nn.Conv2d(13, 128, kernel_size=5, padding=2)
+        self.conv1 = nn.Conv2d(12, 128, kernel_size=5, padding=2)
         self.conv2 = nn.Conv2d(128, 128, kernel_size=5, padding=2)
         self.fc1 = nn.Linear(128*8*8, 2048)
-        self.fc2 = nn.Linear(2048, action_dim)
+        self.fc2 = nn.Linear(2048, 64*76)
 
     def forward(self, x):
         x = F.relu(self.conv1(x))
@@ -29,29 +29,24 @@ class NN(nn.Module):
 class Agent:
 
     def __init__(self,
-                 board_logic=None,
-                 action_dim=None,
-                 num_layers=None,):
+                 board_logic=None,):
 
         self.board_logic = board_logic
-        self.action_dim = action_dim
-    
 
-        self.online_net1 = NN(self.board_logic.state_dim, action_dim, num_layers).to(config.device)
-        self.online_net2 = NN(self.state_dim, action_dim, num_layers,).to(config.device)
+        self.online_net1 = NN().to(config.device)
+        self.online_net2 = NN().to(config.device)
 
-        self.target_net1 = NN(self.state_dim, action_dim, num_layers,).to(config.device)
+        self.target_net1 = NN().to(config.device)
         self.target_net1.load_state_dict(self.online_net1.state_dict())
         self.target_net1.eval()
 
-        self.target_net2 = NN(self.state_dim, action_dim, num_layers).to(config.device)
+        self.target_net2 = NN().to(config.device)
         self.target_net2.load_state_dict(self.online_net2.state_dict())
         self.target_net2.eval()
 
-    def forward(self, board):
-        state = self.board_logic.board_to_state(board)
-        Q1 = self.online_net1(state)
-        Q2 = self.online_net2(state)
+    def forward(self, state_tensor):
+        Q1 = self.online_net1(state_tensor)
+        Q2 = self.online_net2(state_tensor)
         return (Q1 + Q2) / 2
 
     def select_action(self, board, temp=0, greedy=True):
@@ -63,14 +58,18 @@ class Agent:
                 return m
             board.pop()
 
-        moves = torch.tensor([self.board_logic.move_to_action(m) for m in board.legal_moves], dtype=torch.long)
-        state = self.board_logic.board_to_state(board)
+        moves = torch.tensor([self.board_logic.move_to_action(m) for m in board.legal_moves], dtype=torch.long).to(config.device)
+        print(moves.shape)
+        state_tensor = self.board_logic.board_to_state(board).to(config.device)
 
         with torch.no_grad():
-            Q = self.forward(state)
+            Q = self.forward(state_tensor).reshape(-1)
+            print(Q.shape)
             Q = Q[moves]
 
-            logits = (Q - Q.mean()) / (Q.std(unbiased=False) + 1e-5)
+            #logits = (Q - Q.mean()) / (Q.std(unbiased=False) + 1e-5)
+            logits = Q
+            print(logits.shape)
 
             if greedy:
                 action = moves[logits.argmax(1, keepdim=True)]

@@ -12,13 +12,13 @@ from copy import deepcopy
 
 
 class ReplayMemory():
-    def __init__(self, capacity, batch_size, state_dim):
+    def __init__(self, capacity, batch_size):
         self.capacity = capacity
         self.batch_size = batch_size
 
-        self.states = torch.zeros(capacity, state_dim, dtype = torch.float32, device=config.device)
+        self.states = torch.zeros(capacity, 12, 8, 8, dtype = torch.float32, device=config.device)
         self.actions = torch.zeros(capacity, 1, dtype = torch.int64, device=config.device)
-        self.next_states = torch.zeros(capacity, state_dim, dtype = torch.float32, device=config.device)
+        self.next_states = torch.zeros(capacity, 12, 8, 8, dtype = torch.float32, device=config.device)
         self.rewards = torch.zeros(capacity, 1, dtype = torch.float32, device=config.device)
         self.done = torch.zeros(capacity, dtype = torch.bool, device=config.device)
 
@@ -27,8 +27,10 @@ class ReplayMemory():
         self.index = 0
         self.num_samples = 0
 
-    def push(self, state, action, next_state, reward, done):
+    def push(self, transition):
         """Save a transition"""
+
+        state, action, next_state, reward, done = transition
         self.states[self.index] = state
         self.actions[self.index] = action
         self.next_states[self.index] = next_state
@@ -90,17 +92,13 @@ class Model:
         self.temp_min = temp_constants[2]
         self.temp_decay = temp_constants[3]
 
-        a = environment.max_num_actions
+        a = environment.max_num_moves
         self.gamma = 1 - 1/a
-
-        self.num_val = num_val
         self.criterion = criterion
 
         self.counter_episode = 0
-
-        self.fidelity = environment.fidelity
         
-        self.memory = ReplayMemory(mem_capacity, batch_size, self.agent.state_dim)
+        self.memory = ReplayMemory(mem_capacity, batch_size)
 
         self.opt_list = opt_list
         self.scaler = scaler
@@ -111,28 +109,32 @@ class Model:
         
         loss = 0
         for i_episode in tqdm(range(num_episodes)):
-            state_list = []
-            action_list = []
-            next_state_list = []
-            reward_list = []
-            done_list = []
-            state, done = self.environment.reset(seed=i_episode)
-            temp_max = self.temp_start + (self.temp_end - self.temp_start) * self.counter_episode/ self.temp_decay
+            transition_list = []
+            state, done = self.environment.reset()
+            state_prev = None
 
+            temp_max = self.temp_start + (self.temp_end - self.temp_start) * self.counter_episode/ self.temp_decay
             temp = random.uniform(self.temp_min, temp_max)
             self.counter_episode += 1
 
-            for _ in range(self.environment.max_num_actions):
+            for _ in range(self.environment.max_num_moves):
                 action = self.agent.select_action(state, temp=temp, greedy=False)
-                next_state, reward, done = self.environment.step(
-                    action.item())
 
+                state_next, reward, done = self.environment.step(
+                    action)
+                
                 done_tensor = torch.tensor(done, dtype=torch.bool, device=config.device)
-                state_list.append(state)
-                action_list.append(action)
-                next_state_list.append(next_state)
-                reward_list.append(reward)
-                done_list.append(done_tensor)
+
+                if state_prev is not None:
+                    transition_list.append([state_prev, action_prev, state_next, -reward, done_tensor])
+
+                if done:
+                   transition_list.append([state, action, torch.zeros_like(state), reward, done_tensor])
+
+                state_prev = state
+                action_prev = action
+                state = state_next
+
 
                 if counter % self.policy_update == 0:
                     loss = self.optimize_agent()
@@ -145,9 +147,8 @@ class Model:
                 if done:
                     break
 
-                state = next_state
-            
-            self.push_memory([state_list, action_list, next_state_list, reward_list, done_list])
+            for transition in transition_list:
+                self.push_memory(transition)
 
 
     @torch.compile

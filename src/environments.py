@@ -49,4 +49,4 @@ class Environment:
         self.move_count = 0
         self.move_history = []
         self.board = chess.Board()
-        return self.get_state(), self.check_done()
+        return self.board, self.check_done()
