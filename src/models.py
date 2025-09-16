@@ -8,6 +8,8 @@ from torch import nn, optim
 from tqdm.notebook import tqdm
 from environments import *
 from copy import deepcopy
+from collections import deque
+import random
 
 
 
@@ -19,10 +21,11 @@ class ReplayMemory():
         self.states = torch.zeros(capacity, 12, 8, 8, dtype = torch.float32, device=config.device)
         self.actions = torch.zeros(capacity, 1, dtype = torch.int64, device=config.device)
         self.next_states = torch.zeros(capacity, 12, 8, 8, dtype = torch.float32, device=config.device)
+        self.mask_legal = torch.zeros(capacity, 64*76, dtype = torch.bool, device=config.device)
         self.rewards = torch.zeros(capacity, 1, dtype = torch.float32, device=config.device)
         self.done = torch.zeros(capacity, dtype = torch.bool, device=config.device)
 
-        self.data = torch.utils.data.TensorDataset(self.states, self.actions, self.next_states, self.rewards, self.done)
+        self.data = torch.utils.data.TensorDataset(self.states, self.actions, self.next_states, self.mask_legal, self.rewards, self.done)
 
         self.index = 0
         self.num_samples = 0
@@ -30,10 +33,11 @@ class ReplayMemory():
     def push(self, transition):
         """Save a transition"""
 
-        state, action, next_state, reward, done = transition
+        state, action, next_state, mask_legal, reward, done = transition
         self.states[self.index] = state
         self.actions[self.index] = action
         self.next_states[self.index] = next_state
+        self.mask_legal[self.index] = mask_legal
         self.rewards[self.index] = reward
         self.done[self.index] = done
 
@@ -69,11 +73,9 @@ class Model:
                  environment=None,
                  mem_capacity=None,
                  batch_size=None,
-                 batch_size_min=None,
                  policy_update=None,
                  target_update=None,
                  temp_constants=None,
-                 num_val=None,
                  opt_list = None,
                  scaler = None,
                  criterion = nn.SmoothL1Loss(),
@@ -83,7 +85,6 @@ class Model:
         self.environment = environment
         self.mem_capacity = mem_capacity
         self.batch_size = batch_size
-        self.batch_size_min = batch_size_min
         self.policy_update = policy_update
         self.target_update = target_update
 
@@ -94,6 +95,7 @@ class Model:
 
         a = environment.max_num_moves
         self.gamma = 1 - 1/a
+        self.gamma = 1
         self.criterion = criterion
 
         self.counter_episode = 0
@@ -106,35 +108,37 @@ class Model:
     #@profile
     def train(self, num_episodes, logger=None):
         counter = 0
-        
         loss = 0
         for i_episode in tqdm(range(num_episodes)):
-            transition_list = []
-            state, done = self.environment.reset()
+            board = self.environment.reset()
+            state = self.agent.board_to_state([board])
             state_prev = None
 
             temp_max = self.temp_start + (self.temp_end - self.temp_start) * self.counter_episode/ self.temp_decay
-            temp = random.uniform(self.temp_min, temp_max)
+            eps = random.uniform(self.temp_min, temp_max)
             self.counter_episode += 1
 
-            for _ in range(self.environment.max_num_moves):
-                action = self.agent.select_action(state, temp=temp, greedy=False)
-
-                state_next, reward, done = self.environment.step(
-                    action)
+            for i in range(self.environment.max_num_moves):
+                action = self.agent.select_action(board, eps=eps, greedy=False)
+                move = self.agent.action_to_move(action)[0]
+                board_next, (reward, done) = self.environment.step(
+                    move)
                 
+                state_next = self.agent.board_to_state([board_next])
+                legal_mask = self.agent.get_mask_legal([board_next])
+
                 done_tensor = torch.tensor(done, dtype=torch.bool, device=config.device)
 
                 if state_prev is not None:
-                    transition_list.append([state_prev, action_prev, state_next, -reward, done_tensor])
+                    self.memory.push([state_prev, action_prev, state_next, legal_mask, -reward, done_tensor])
 
                 if done:
-                   transition_list.append([state, action, torch.zeros_like(state), reward, done_tensor])
+                   self.memory.push([state, action, state_next, legal_mask, reward, done_tensor])
 
+                board = board_next
                 state_prev = state
                 action_prev = action
                 state = state_next
-
 
                 if counter % self.policy_update == 0:
                     loss = self.optimize_agent()
@@ -145,18 +149,19 @@ class Model:
                 counter += 1
 
                 if done:
+                    if reward.item() == 1:
+                        print(i_episode, "checkmate!", i, eps)
+                    else:
+                        print(i_episode, "draw!", i, eps)
                     break
-
-            for transition in transition_list:
-                self.push_memory(transition)
-
+            if i_episode % 100 == 0:
+                print(loss)
 
     @torch.compile
     def compute_loss(self):
-        if self.memory.num_samples < self.batch_size_min:
+        if self.memory.num_samples < self.batch_size:
             return 0, None
-        state_batch, action_batch, next_state_batch, reward_batch, done_batch = self.memory.sample()
-
+        state_batch, action_batch, next_state_batch, mask_legal_batch, reward_batch, done_batch = self.memory.sample()
 
         if random.random() < 0.5:
             online_net = self.agent.online_net1
@@ -167,9 +172,14 @@ class Model:
             target_net = self.agent.target_net1
             opt = self.opt_list[1]
 
-        state_action_values = online_net(state_batch).gather(1, action_batch)
+        Q = online_net(state_batch)
+        state_action_values = Q.gather(1, action_batch)
+
         with torch.no_grad():
-            action_star = online_net(next_state_batch).argmax(1, keepdim=True)
+            Q_next = online_net(next_state_batch)
+            Q_next = Q_next.masked_fill(~mask_legal_batch, -1e-9)
+            action_star = Q_next.argmax(1, keepdim=True)
+
             next_state_values = target_net(next_state_batch).gather(1, action_star)
             next_state_values[done_batch] = 0
 
@@ -193,10 +203,6 @@ class Model:
         opt.zero_grad(set_to_none=True)
 
         return loss.detach()
-
-    def push_memory(self, transition_list, done):
-        for state, action, next_state, reward, done_tensor in zip(*transition_list):
-            self.memory.push(state, action, next_state, reward, done_tensor)
 
 
     def set_temp(self, temp_constants):

@@ -15,9 +15,9 @@ class NN(nn.Module):
         super(NN, self).__init__()
 
         self.conv1 = nn.Conv2d(12, 128, kernel_size=5, padding=2)
-        self.conv2 = nn.Conv2d(128, 128, kernel_size=5, padding=2)
-        self.fc1 = nn.Linear(128*8*8, 2048)
-        self.fc2 = nn.Linear(2048, 64*76)
+        self.conv2 = nn.Conv2d(128, 256, kernel_size=5, padding=2)
+        self.fc1 = nn.Linear(256*8*8, 8192)
+        self.fc2 = nn.Linear(8192, 64*76)
 
     def forward(self, x):
         x = F.relu(self.conv1(x))
@@ -49,41 +49,59 @@ class Agent:
         Q2 = self.online_net2(state_tensor)
         return (Q1 + Q2) / 2
 
-    def select_action(self, board, temp=0, greedy=True):
+    def select_action(self, board, eps=0, greedy=True):
 
         for m in board.legal_moves:
             board.push(m)
             if board.is_checkmate():
                 board.pop()
-                return m
+                return self.move_to_action(m)
             board.pop()
 
-        moves = torch.tensor([self.board_logic.move_to_action(m) for m in board.legal_moves], dtype=torch.long).to(config.device)
-        print(moves.shape)
-        state_tensor = self.board_logic.board_to_state(board).to(config.device)
-
         with torch.no_grad():
-            Q = self.forward(state_tensor).reshape(-1)
-            print(Q.shape)
-            Q = Q[moves]
-
-            #logits = (Q - Q.mean()) / (Q.std(unbiased=False) + 1e-5)
+            state_tensor = self.board_logic.board_to_state([board]).to(config.device)
+            mask_legal = self.get_mask_legal([board])
+            
+            Q = self.forward(state_tensor)
+            
             logits = Q
-            print(logits.shape)
+            logits = logits.masked_fill(~mask_legal, -1e9)
 
             if greedy:
-                action = moves[logits.argmax(1, keepdim=True)]
+                action = logits.argmax(1, keepdim=True)
             else:
-                dist = F.softmax(logits/temp, dim=1)
-                action = moves[torch.multinomial(dist, num_samples=1)]
+                if random.random() < eps:
+                    legal_actions = mask_legal.nonzero(as_tuple=False)
+                    idx = random.randint(0, len(legal_actions)-1)
+                    action = legal_actions[idx][1].view(1, 1)
+                else:
+                    action = logits.argmax(1, keepdim=True)
 
-            move_next = self.board_logic.action_to_move(int(action))
 
-            return move_next
+            return action
 
     def update_target_net(self):
         self.target_net1.load_state_dict(self.online_net1.state_dict())
         self.target_net2.load_state_dict(self.online_net2.state_dict())
+
+    def board_to_state(self, board_list):
+        return self.board_logic.board_to_state(board_list).to(config.device)
+
+    def action_to_move(self, action):
+        return [self.board_logic.action_to_move(int(a)) for a in action]
+
+    def move_to_action(self, move):
+        return torch.tensor(self.board_logic.move_to_action(move), dtype=torch.long, device=config.device).view(1, 1)
+
+    def get_mask_legal(self, board_list):
+        mask_legal = torch.zeros(len(board_list), 64*76, dtype=torch.bool)
+
+        for i, board in enumerate(board_list):
+            moves = torch.tensor([self.board_logic.move_to_action(m) for m in board.legal_moves], 
+                                dtype=torch.long)
+            mask_legal[i, moves] = 1
+
+        return mask_legal.to(config.device)
 
 
 def make_move_dict():
@@ -133,12 +151,17 @@ class BoardLogic:
 
         self.move_dict, self.move_dict_inv = make_move_dict()
 
-    def board_to_state(self, board):
-        state = [row.split(" ") for row in str(board).split("\n")]
-        state = [[self.piece_to_idx[p] for p in row] for row in state]
-        state_onehot = F.one_hot(torch.tensor(state), num_classes=len(self.unique_pieces)).float().permute(2, 0, 1)
-        state_onehot = state_onehot[1:].unsqueeze(0) 
-        return state_onehot
+    def board_to_state(self, board_list):
+
+        state_list = []
+        for board in board_list:
+            state = [row.split(" ") for row in str(board).split("\n")]
+            state = [[self.piece_to_idx[p] for p in row] for row in state]
+            state_onehot = F.one_hot(torch.tensor(state), num_classes=len(self.unique_pieces)).float().permute(2, 0, 1)
+            state_onehot = state_onehot[1:].unsqueeze(0)
+            state_list.append(state_onehot)
+
+        return torch.cat(state_list, dim=0)
 
     def move_get_origin(self, move):
         move = str(move)
