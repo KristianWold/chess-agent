@@ -95,7 +95,6 @@ class Model:
 
         a = environment.max_num_moves
         self.gamma = 1 - 1/a
-        self.gamma = 1
         self.criterion = criterion
 
         self.counter_episode = 0
@@ -115,7 +114,7 @@ class Model:
             state_prev = None
 
             temp_max = self.temp_start + (self.temp_end - self.temp_start) * self.counter_episode/ self.temp_decay
-            temp_max = min(self.temp_end, temp_max)
+            temp_max = max(self.temp_end, temp_max)
 
             eps = random.uniform(self.temp_min, temp_max)
             self.counter_episode += 1
