@@ -101,7 +101,14 @@ class Agent:
         mask_legal = torch.zeros(len(board_list), 64*76, dtype=torch.bool)
 
         for i, board in enumerate(board_list):
-            moves = torch.tensor([self.board_logic.move_to_action(m) for m in board.legal_moves], 
+            legal_moves = []
+            for m in board.legal_moves:
+                board.push(m)
+                if not board.is_repetition(3):
+                    legal_moves.append(m)
+                board.pop()
+
+            moves = torch.tensor([self.board_logic.move_to_action(m) for m in legal_moves], 
                                 dtype=torch.long)
             mask_legal[i, moves] = 1
 
