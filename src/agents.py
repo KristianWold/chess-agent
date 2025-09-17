@@ -14,17 +14,19 @@ class NN(nn.Module):
     def __init__(self):
         super(NN, self).__init__()
 
-        self.conv1 = nn.Conv2d(12, 128, kernel_size=5, padding=2)
-        self.conv2 = nn.Conv2d(128, 256, kernel_size=5, padding=2)
-        self.fc1 = nn.Linear(256*8*8, 8192)
-        self.fc2 = nn.Linear(8192, 64*76)
+        #self.conv1 = nn.Conv2d(12, 10, kernel_size=5, padding=2)
+        #self.conv2 = nn.Conv2d(10, 10, kernel_size=5, padding=2)
+        self.fc1 = nn.Linear(12*8*8, 1500)
+        self.fc2 = nn.Linear(1500, 3000)
+        self.fc3 = nn.Linear(3000, 64*76)
 
     def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
+        #x = F.relu(self.conv1(x))
+        #x = F.relu(self.conv2(x))
         x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
-        return self.fc2(x)
+        x = F.selu(self.fc1(x))
+        x = F.selu(self.fc2(x))
+        return self.fc3(x)
 
 class Agent:
 
