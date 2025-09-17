@@ -18,7 +18,8 @@ class NN(nn.Module):
         #self.conv2 = nn.Conv2d(10, 10, kernel_size=5, padding=2)
         self.fc1 = nn.Linear(12*8*8, 1500)
         self.fc2 = nn.Linear(1500, 3000)
-        self.fc3 = nn.Linear(3000, 64*76)
+        self.fc3 = nn.Linear(3000, 6000)
+        self.fc4 = nn.Linear(6000, 64*76)
 
     def forward(self, x):
         #x = F.relu(self.conv1(x))
@@ -26,7 +27,8 @@ class NN(nn.Module):
         x = x.view(x.size(0), -1)
         x = F.selu(self.fc1(x))
         x = F.selu(self.fc2(x))
-        return self.fc3(x)
+        x = F.selu(self.fc3(x))
+        return self.fc4(x)
 
 class Agent:
 
@@ -93,7 +95,7 @@ class Agent:
         return [self.board_logic.action_to_move(int(a)) for a in action]
 
     def move_to_action(self, move):
-        return torch.tensor(self.board_logic.move_to_action(move), dtype=torch.long, device=config.device).view(1, 1)
+        return torch.tensor(self.board_logic.move_to_action(move), dtype=torch.long, device=config.device)
 
     def get_mask_legal(self, board_list):
         mask_legal = torch.zeros(len(board_list), 64*76, dtype=torch.bool)

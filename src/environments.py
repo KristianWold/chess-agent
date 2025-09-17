@@ -33,7 +33,7 @@ class Environment:
             done = False
             reward = 0
 
-        return torch.tensor(reward, dtype=torch.float, device=config.device).view(1, 1), bool(done)
+        return torch.tensor(reward, dtype=torch.float, device=config.device).view(1,1), bool(done)
 
     def step(self, move):
         self.move_count += 1

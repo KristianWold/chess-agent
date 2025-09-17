@@ -23,7 +23,7 @@ class ReplayMemory():
         self.next_states = torch.zeros(capacity, 12, 8, 8, dtype = torch.float32, device=config.device)
         self.mask_legal = torch.zeros(capacity, 64*76, dtype = torch.bool, device=config.device)
         self.rewards = torch.zeros(capacity, 1, dtype = torch.float32, device=config.device)
-        self.done = torch.zeros(capacity, dtype = torch.bool, device=config.device)
+        self.done = torch.zeros(capacity, 1, dtype = torch.float32, device=config.device)
 
         self.data = torch.utils.data.TensorDataset(self.states, self.actions, self.next_states, self.mask_legal, self.rewards, self.done)
 
@@ -121,20 +121,23 @@ class Model:
 
             for i in range(self.environment.max_num_moves):
                 action = self.agent.select_action(board, eps=eps, greedy=False)
-                move = self.agent.action_to_move(action)[0]
+                move = self.agent.action_to_move([action])[0]
                 board_next, (reward, done) = self.environment.step(
                     move)
                 
                 state_next = self.agent.board_to_state([board_next])
                 legal_mask = self.agent.get_mask_legal([board_next])
 
-                done_tensor = torch.tensor(done, dtype=torch.bool, device=config.device)
+                if i == self.environment.max_num_moves - 1:
+                    done = True
+
+                done_tensor = torch.tensor(done, dtype=torch.float32, device=config.device).view(1,1)
 
                 if state_prev is not None:
                     self.memory.push([state_prev, action_prev, state_next, legal_mask, -reward, done_tensor])
 
-                if done:
-                   self.memory.push([state, action, state_next, legal_mask, reward, done_tensor])
+                if not done:
+                    self.memory.push([state, action, state_next, legal_mask, reward, done_tensor])
 
                 board = board_next
                 state_prev = state
@@ -180,11 +183,11 @@ class Model:
             Q_next = online_net(next_state_batch)
             Q_next = Q_next.masked_fill(~mask_legal_batch, -1e-9)
             action_star = Q_next.argmax(1, keepdim=True)
-
+        
             next_state_values = target_net(next_state_batch).gather(1, action_star)
-            next_state_values[done_batch] = 0
+            next_state_values = next_state_values.clamp(-1, 1)
 
-            expected_state_action_values = reward_batch + self.gamma*next_state_values
+            expected_state_action_values = reward_batch + self.gamma*(1 - done_batch)*next_state_values
 
         loss = self.criterion(state_action_values, expected_state_action_values)
         return loss, opt
