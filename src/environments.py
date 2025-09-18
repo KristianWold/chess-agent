@@ -21,6 +21,7 @@ class Environment:
         self.board = chess.Board()
         self.episode_count = 0
         self.move_count = 0
+        self.mirror = False
 
     def get_reward_and_done(self):
         if self.board.is_checkmate():
@@ -37,14 +38,44 @@ class Environment:
 
     def step(self, move):
         self.move_count += 1
+        if self.mirror:
+            move = flip_move(move)
+
         self.move_history.append(str(move))
         self.board.push(move)
-        self.board = self.board.mirror()
-        return deepcopy(self.board), self.get_reward_and_done()
+        self.mirror = not self.mirror
+        return self.get_board(), self.get_reward_and_done()
 
     def reset(self):
         self.episode_count += 1
+        self.mirror = False
         self.move_count = 0
         self.move_history = []
         self.board = chess.Board()
         return deepcopy(self.board)
+    
+    def get_board(self):
+        return deepcopy(self.board) if not self.mirror else self.board.mirror()
+
+    def get_legal_moves(self):
+        legal_moves = []
+        for m in self.board.legal_moves:
+            self.board.push(m)
+            if not self.board.is_repetition(3):
+                legal_moves.append(m)
+            self.board.pop()
+
+        if self.mirror:
+            legal_moves = [flip_move(m) for m in legal_moves]
+
+        return legal_moves
+    
+
+def flip_move(move: chess.Move) -> chess.Move:
+    """Flips a chess.Move object to correspond to a mirrored board."""
+    from_square_flipped = chess.square_mirror(move.from_square)
+    to_square_flipped = chess.square_mirror(move.to_square)
+    
+    # Promotion piece type doesn't change when mirroring the board
+    # (e.g., a queen is still a queen, just on a mirrored square).
+    return chess.Move(from_square_flipped, to_square_flipped, move.promotion)

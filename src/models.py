@@ -110,7 +110,7 @@ class Model:
         loss = 0
         for i_episode in tqdm(range(num_episodes)):
             board = self.environment.reset()
-            state = self.agent.board_to_state([board])
+            state = self.agent.board_to_state(board)
             state_prev = None
 
             temp_max = self.temp_start + (self.temp_end - self.temp_start) * self.counter_episode/ self.temp_decay
@@ -120,13 +120,15 @@ class Model:
             self.counter_episode += 1
 
             for i in range(self.environment.max_num_moves):
-                action = self.agent.select_action(board, eps=eps, greedy=False)
-                move = self.agent.action_to_move([action])[0]
+                action = self.agent.select_action(self.environment, 
+                                                  eps=eps, 
+                                                  greedy=False)
+                move = self.agent.action_to_move(action)
                 board_next, (reward, done) = self.environment.step(
                     move)
-                
-                state_next = self.agent.board_to_state([board_next])
-                legal_mask = self.agent.get_mask_legal([board_next])
+
+                state_next = self.agent.board_to_state(board_next)
+                legal_mask = self.agent.get_mask_legal(self.environment.get_legal_moves())
 
                 if i == self.environment.max_num_moves - 1:
                     done = True
