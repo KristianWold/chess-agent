@@ -13,38 +13,94 @@ class NN(nn.Module):
 
     def __init__(self):
         super(NN, self).__init__()
-
-        self.conv1 = nn.Conv2d(12, 128, kernel_size=5, padding=2)
-        self.conv2 = nn.Conv2d(128, 128, kernel_size=5, padding=2)
-        self.fc1 = nn.Linear(128*8*8, 6000)
-        self.fc2 = nn.Linear(6000, 64*76)
+        size = 4096
+        #self.conv1 = nn.Conv2d(12, 128, kernel_size=5, padding=2)
+        #self.conv2 = nn.Conv2d(128, 128, kernel_size=5, padding=2)
+        self.fc1 = nn.Linear(12*8*8, size)
+        self.fc2 = nn.Linear(size, size)
+        self.fc3 = nn.Linear(size, size)
+        self.fc4 = nn.Linear(size, 64*76)
 
     def forward(self, x):
-        x = F.selu(self.conv1(x))
-        x = F.selu(self.conv2(x))
-        x = x.view(x.size(0), -1)
+        x = x.float()
+        x = x.reshape(x.size(0), -1)
         x = F.selu(self.fc1(x))
-        return self.fc2(x)
+        x = F.selu(self.fc2(x))
+        x = F.selu(self.fc3(x))
+        return self.fc4(x)
+    
 
-class Agent:
+class ConvResBlock(nn.Module):
+
+    def __init__(self, ch):
+        super(ConvResBlock, self).__init__()
+        self.conv1 = nn.Conv2d(ch, ch, kernel_size=3, padding=1, bias = False)
+        self.conv2 = nn.Conv2d(ch, ch, kernel_size=3, padding=1, bias = False)
+
+        self.gn1 = nn.GroupNorm(8, ch)
+        self.gn2 = nn.GroupNorm(8, ch)
+
+    def forward(self, x):
+        h = self.conv1(x)
+        h = F.silu(self.gn1(h))
+        h = self.conv2(h)
+        h = self.gn2(h)
+        return F.silu(x + h)
+
+
+class ConvNN(nn.Module):
+
+    def __init__(self, in_ch=14, ch=128, n_blocks=8):
+        super(ConvNN, self).__init__()
+        self.stem = nn.Conv2d(in_ch, ch, 3, padding=1)
+
+        blocks = []
+        for i in range(n_blocks):
+            blocks.append(ConvResBlock(ch))
+
+        self.blocks = nn.Sequential(*blocks)
+        self.head_q = nn.Conv2d(ch, 76, 1)
+
+        self.rank_plane = torch.linspace(-1, 1, 8).view(1, 8).repeat(8, 1).unsqueeze(0).unsqueeze(0)
+        self.file_plane = torch.linspace(-1, 1, 8).view(8, 1).repeat(1, 8).unsqueeze(0).unsqueeze(0)
+
+
+    def forward(self, x):
+        x = x.float()
+
+        r_plane = self.rank_plane.repeat(x.size(0), 1, 1, 1).to(x.device)
+        f_plane = self.file_plane.repeat(x.size(0), 1, 1, 1).to(x.device)
+        x = torch.cat([x, r_plane, f_plane], dim=1)
+
+        x = F.silu(self.stem(x))
+        x = self.blocks(x)
+        return self.head_q(x).view(x.size(0), -1)
+
+
+
+class Agent(nn.Module):
 
     def __init__(self,
-                 board_logic=None,):
+                 board_logic=None,
+                 in_ch=14, 
+                 ch=128, 
+                 n_blocks=8):
+        super(Agent, self).__init__()
 
         self.board_logic = board_logic
 
-        self.online_net1 = NN().to(config.device)
-        self.online_net2 = NN().to(config.device)
+        self.online_net1 = ConvNN(in_ch, ch, n_blocks).to(config.device)
+        self.online_net2 = ConvNN(in_ch, ch, n_blocks).to(config.device)
 
-        self.target_net1 = NN().to(config.device)
+        self.target_net1 = ConvNN(in_ch, ch, n_blocks).to(config.device)
         self.target_net1.load_state_dict(self.online_net1.state_dict())
         self.target_net1.eval()
 
-        self.target_net2 = NN().to(config.device)
+        self.target_net2 = ConvNN(in_ch, ch, n_blocks).to(config.device)
         self.target_net2.load_state_dict(self.online_net2.state_dict())
         self.target_net2.eval()
 
-    def forward(self, state_tensor):
+    def forward(self, state_tensor, network_id=None):
         Q1 = self.online_net1(state_tensor)
         Q2 = self.online_net2(state_tensor)
         return (Q1 + Q2) / 2
@@ -52,6 +108,7 @@ class Agent:
     def select_action(self, environment, eps=0, greedy=True):
         board = environment.get_board()
         legal_moves = environment.get_legal_moves()
+
         for m in legal_moves:
             board.push(m)
             if board.is_checkmate():
@@ -102,6 +159,18 @@ class Agent:
         mask_legal[0, action] = 1
 
         return mask_legal.to(config.device)
+    
+    def get_diff_Q(self, state, mask_legal):
+        Q1 = self.online_net1(state).detach()
+        Q2 = self.online_net2(state).detach()
+
+        Q1_legal = Q1[mask_legal]
+        Q2_legal = Q2[mask_legal]
+
+        diff = 2*torch.abs(Q1_legal - Q2_legal)/(torch.abs(Q1_legal) + torch.abs(Q2_legal))
+        diff = diff.mean().cpu().item()
+
+        return diff
 
 
 def make_move_dict():
@@ -128,10 +197,10 @@ def make_move_dict():
     move_dict[(-1, -2)] = len(move_dict)
 
     # promotions
-    for piece in range(4):
-        move_dict[(0, 1, piece)] = len(move_dict)
-        move_dict[(1, 1, piece)] = len(move_dict)
-        move_dict[(-1, 1, piece)] = len(move_dict)
+    for piece in range(2,6): # knight, bishop, rook, queen
+        move_dict[(0, -1, piece)] = len(move_dict)
+        move_dict[(1, -1, piece)] = len(move_dict)
+        move_dict[(-1, -1, piece)] = len(move_dict)
 
     move_dict_inv = {v: k for k, v in move_dict.items()}
 
@@ -145,36 +214,28 @@ class BoardLogic:
         self.unique_pieces = sorted(set(str(self.board).replace("\n", "").replace(" ", "")))
         self.piece_to_idx = {p: i for i, p in enumerate(self.unique_pieces)}
 
-        self.alpha_idx = {c: i for i, c in enumerate("abcdefgh")}
-        self.numeric_idx = {c: i for i, c in enumerate("12345678")}
-        self.promotion_idx = {c: i for i, c in enumerate("qrbn")}
-
         self.move_dict, self.move_dict_inv = make_move_dict()
 
     def board_to_state(self, board):
 
         state = [row.split(" ") for row in str(board).split("\n")]
         state = [[self.piece_to_idx[p] for p in row] for row in state]
-        state_onehot = F.one_hot(torch.tensor(state), num_classes=len(self.unique_pieces)).float().permute(2, 0, 1)
+        state_onehot = F.one_hot(torch.tensor(state), num_classes=len(self.unique_pieces)).to(torch.bool).permute(2, 0, 1)
         state_onehot = state_onehot[1:].unsqueeze(0)
-
 
         return state_onehot.to(config.device)
 
     def move_get_origin(self, move):
-        move = str(move)
-        x, y = self.alpha_idx[move[0]], self.numeric_idx[move[1]]
+        x, y = self.square_to_xy(move.from_square)
         return x + y*8
 
     def move_get_delta(self, move):
-        move = str(move)
-        x1, y1 = self.alpha_idx[move[0]], self.numeric_idx[move[1]]
-        x2, y2 = self.alpha_idx[move[2]], self.numeric_idx[move[3]]
+        x1, y1 = self.square_to_xy(move.from_square)
+        x2, y2 = self.square_to_xy(move.to_square)
         delta = (x2-x1, y2-y1)
 
-        if len(move) == 5:  # promotion
-            piece = self.promotion_idx[move[4].lower()]
-            delta = (*delta , piece)
+        if move.promotion:  # promotion
+            delta = (*delta , move.promotion)
 
         return self.move_dict[delta]
 
@@ -190,10 +251,19 @@ class BoardLogic:
         origin, delta = action//len(self.move_dict), action%len(self.move_dict)
         x = origin % 8
         y = origin // 8
+        delta =self.move_dict_inv[delta]
+        dx, dy = delta[0], delta[1]
+        move = [self.xy_to_square(x, y), self.xy_to_square(x+dx, y+dy)]
 
-        move_delta = self.move_dict_inv[delta]
-        move = "abcdefgh"[x] + str(y+1) + "abcdefgh"[x + move_delta[0]] + str(y + 1 + move_delta[1])
-        if len(move_delta) == 3:  # promotion
-            move += "qrbn"[move_delta[2]]
+        if len(delta) == 3:  # promotion
+            move.append(delta[2]-1)
 
-        return chess.Move.from_uci(move)
+        return chess.Move(*move)
+    
+    def square_to_xy(self, square):
+        x = chess.square_file(square)
+        y = 7 - chess.square_rank(square)
+        return x, y
+
+    def xy_to_square(self, x, y):
+        return chess.square(x, 7 - y)

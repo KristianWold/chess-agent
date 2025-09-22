@@ -26,10 +26,11 @@ class Environment:
     def get_reward_and_done(self):
         if self.board.is_checkmate():
             done = True
-            reward = 1 
-        elif self.board.is_stalemate():
+            reward = 1
+        elif len(self.get_legal_moves()) == 0 or self.move_count >= self.max_num_moves:
+            # draw   
             done = True
-            reward = 0  # draw
+            reward = 0
         else:
             done = False
             reward = 0
@@ -40,8 +41,6 @@ class Environment:
         self.move_count += 1
         if self.mirror:
             move = flip_move(move)
-
-        self.move_history.append(str(move))
         self.board.push(move)
         self.mirror = not self.mirror
         return self.get_board(), self.get_reward_and_done()
@@ -50,7 +49,6 @@ class Environment:
         self.episode_count += 1
         self.mirror = False
         self.move_count = 0
-        self.move_history = []
         self.board = chess.Board()
         return deepcopy(self.board)
     
