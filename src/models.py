@@ -50,22 +50,6 @@ class ReplayMemory():
         return batch
 
 
-class Logger:
-    def __init__(self, sample_freq=1):
-        self.sample_freq = sample_freq
-
-        self.fidelity = []
-        self.length = []
-        self.solved = []
-        self.loss = []
-
-    def __call__(self, fidelity, length, solved, loss):
-        self.fidelity.append(fidelity)
-        self.length.append(length)
-        self.solved.append(solved)
-        self.loss.append(loss)
-
-
 class Model:
 
     def __init__(self,
@@ -108,7 +92,7 @@ class Model:
         self.scaler = scaler
 
     #@profile
-    def train(self, num_episodes, logger=None, evaluate_agents=None):
+    def train(self, num_episodes, evaluate_agents=None, freq=1000):
         counter = 0
         loss = 0
         diff = 0
@@ -120,7 +104,7 @@ class Model:
             temp_max = self.temp_start + (self.temp_end - self.temp_start) * self.counter_episode/ self.temp_decay
             temp_max = max(self.temp_end, temp_max)
 
-            eps = random.uniform(self.temp_min, temp_max)
+            temp = np.exp(random.uniform(np.log(self.temp_min), np.log(temp_max)))
             self.counter_episode += 1
 
             transition_list = []
@@ -128,8 +112,10 @@ class Model:
 
             while not done:
                 action = self.agent.select_action(self.environment, 
-                                                  eps=eps, 
+                                                  temp=temp, 
                                                   greedy=False)
+                temp *= 0.95 
+
                 move = self.agent.action_to_move(action)
                 board_next, (reward, done) = self.environment.step(
                     move)
@@ -165,18 +151,22 @@ class Model:
                 for transition in transition_list:
                     self.memory_neg.push(transition)
 
-            if i_episode % 1000 == 0:
+            if i_episode % freq == 0:
                 results = evaluate_agents.evaluate(verbose=False)
                 transitions = self.sample_memory()
+                diff = 0
                 if transitions is not None:
                     _, _, next_state_batch, mask_legal_batch, _, _ = transitions
                     state_next_batch = next_state_batch
                     mask_legal_batch = mask_legal_batch
-                diff_list = []
-                for state_next, mask_legal in zip(state_next_batch, mask_legal_batch):
-                    diff = self.agent.get_diff_Q(state_next.unsqueeze(0), mask_legal.unsqueeze(0))
-                    diff_list.append(diff)
-                print(results, loss, np.mean(diff_list))
+                    diff_list = []
+                    for state_next, mask_legal in zip(state_next_batch, mask_legal_batch):
+                        if mask_legal.sum() != 0:    
+                            diff = self.agent.get_diff_Q(state_next.unsqueeze(0), mask_legal.unsqueeze(0))
+                            diff_list.append(diff)
+                    diff = np.mean(diff_list)
+
+                print(results, loss, diff)
 
     @torch.compile
     def compute_loss(self):
@@ -198,7 +188,7 @@ class Model:
 
         with torch.no_grad():
             Q_next = online_net(next_state_batch)
-            Q_next = Q_next.masked_fill(~mask_legal_batch, -1e-9)
+            Q_next = Q_next.masked_fill(~mask_legal_batch, -float('inf'))
             action_star = Q_next.argmax(1, keepdim=True)
         
             next_state_values = target_net(next_state_batch).gather(1, action_star)
@@ -297,11 +287,12 @@ def group_decay_parameters(model, weight_decay=0.01, no_decay=['bias', 'GroupNor
 
 
 class EvaluateAgents:
-    def __init__(self, agent1, agent2, environment, num_games):
+    def __init__(self, agent1, agent2, environment, num_games, temp):
         self.agent1 = agent1
         self.agent2 = agent2
         self.environment = environment
         self.num_games = num_games
+        self.temp = temp
 
     def play_game(self, verbose=False):
         board = self.environment.reset()
@@ -314,12 +305,15 @@ class EvaluateAgents:
             agent2 = self.agent1
             one_starts = False
 
-
-        for i in range(self.environment.max_num_moves):
+        done = False
+        temp = self.temp
+        while not done:
             if self.environment.mirror:
-                action = agent2.select_action(self.environment, eps=0.1, greedy=False)
+                action = agent2.select_action(self.environment, temp=temp, greedy=False)
             else:
-                action = agent1.select_action(self.environment, eps=0.1, greedy=False)
+                action = agent1.select_action(self.environment, temp=temp, greedy=False)
+
+            temp *= 0.95
 
             move = agent1.action_to_move(action)
             board, (reward, done) = self.environment.step(move)

@@ -105,7 +105,7 @@ class Agent(nn.Module):
         Q2 = self.online_net2(state_tensor)
         return (Q1 + Q2) / 2
 
-    def select_action(self, environment, eps=0, greedy=True):
+    def select_action(self, environment, temp=1, greedy=True):
         board = environment.get_board()
         legal_moves = environment.get_legal_moves()
 
@@ -122,19 +122,15 @@ class Agent(nn.Module):
             
             Q = self.forward(state_tensor)
             
-            logits = Q
-            logits = logits.masked_fill(~mask_legal, -1e9)
+            Q_legal = Q.masked_fill(~mask_legal, -float('inf'))
+            max_q = Q_legal.max(dim=1, keepdim=True).values
+            logits = (Q_legal - max_q)/temp
 
             if greedy:
                 action = logits.argmax(1, keepdim=True)
             else:
-                if random.random() < eps:
-                    legal_actions = mask_legal.nonzero(as_tuple=False)
-                    idx = random.randint(0, len(legal_actions)-1)
-                    action = legal_actions[idx][1].view(1, 1)
-                else:
-                    action = logits.argmax(1, keepdim=True)
-
+                dist = torch.distributions.Categorical(logits=logits)
+                action = dist.sample().view(-1,1)   
 
             return action
 
@@ -161,14 +157,15 @@ class Agent(nn.Module):
         return mask_legal.to(config.device)
     
     def get_diff_Q(self, state, mask_legal):
-        Q1 = self.online_net1(state).detach()
-        Q2 = self.online_net2(state).detach()
+        with torch.no_grad():
+            Q1 = self.online_net1(state).detach()
+            Q2 = self.online_net2(state).detach()
 
-        Q1_legal = Q1[mask_legal]
-        Q2_legal = Q2[mask_legal]
+            Q1_legal = Q1[mask_legal]
+            Q2_legal = Q2[mask_legal]
 
-        diff = 2*torch.abs(Q1_legal - Q2_legal)/(torch.abs(Q1_legal) + torch.abs(Q2_legal))
-        diff = diff.mean().cpu().item()
+            diff = 2*torch.abs(Q1_legal - Q2_legal)/(torch.abs(Q1_legal) + torch.abs(Q2_legal))
+            diff = diff.mean().cpu().item()
 
         return diff
 
