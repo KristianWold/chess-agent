@@ -74,6 +74,5 @@ def flip_move(move: chess.Move) -> chess.Move:
     from_square_flipped = chess.square_mirror(move.from_square)
     to_square_flipped = chess.square_mirror(move.to_square)
     
-    # Promotion piece type doesn't change when mirroring the board
-    # (e.g., a queen is still a queen, just on a mirrored square).
+    # Promotion types remain the same
     return chess.Move(from_square_flipped, to_square_flipped, move.promotion)

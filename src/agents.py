@@ -22,8 +22,7 @@ class ConvResBlock(nn.Module):
         h = self.conv1(x)
         h = F.silu(self.gn1(h))
         h = self.conv2(h)
-        h = self.gn2(h)
-        return F.silu(x + h)
+        return F.silu(self.gn2(h) + x)
 
 
 class ConvNN(nn.Module):
@@ -39,21 +38,23 @@ class ConvNN(nn.Module):
         self.blocks = nn.Sequential(*blocks)
         self.head_q = nn.Conv2d(ch, 76, 1)
 
-        self.rank_plane = torch.linspace(-1, 1, 8).view(1, 8).repeat(8, 1).unsqueeze(0).unsqueeze(0)
-        self.file_plane = torch.linspace(-1, 1, 8).view(8, 1).repeat(1, 8).unsqueeze(0).unsqueeze(0)
+        rank = torch.linspace(-1, 1, 8).view(1,1,8,1).expand(1,1,8,8)  # [1,1,8,8]
+        file = torch.linspace(-1, 1, 8).view(1,1,1,8).expand(1,1,8,8)  # [1,1,8,8]
+        self.register_buffer("rank_plane", rank)
+        self.register_buffer("file_plane", file)
 
 
     def forward(self, x):
         x = x.float()
+        b = x.size(0)
 
-        r_plane = self.rank_plane.repeat(x.size(0), 1, 1, 1).to(x.device)
-        f_plane = self.file_plane.repeat(x.size(0), 1, 1, 1).to(x.device)
+        r_plane = self.rank_plane.expand(b, -1, -1, -1).to(dtype=x.dtype)
+        f_plane = self.file_plane.expand(b, -1, -1, -1).to(dtype=x.dtype)
         x = torch.cat([x, r_plane, f_plane], dim=1)
 
         x = F.silu(self.stem(x))
         x = self.blocks(x)
-        return self.head_q(x).view(x.size(0), -1)
-
+        return self.head_q(x).view(b, -1)
 
 
 class Agent(nn.Module):
@@ -100,7 +101,7 @@ class Agent(nn.Module):
             
             Q = self.forward(state_tensor)
             
-            Q_legal = Q.masked_fill(~mask_legal, -1e9)
+            Q_legal = Q.masked_fill(~mask_legal, -1e4)
             max_q = Q_legal.max(dim=1, keepdim=True).values
             logits = (Q_legal - max_q)/temp
 
@@ -112,10 +113,6 @@ class Agent(nn.Module):
 
             return action
 
-    def update_target_net(self):
-        self.target_net1.load_state_dict(self.online_net1.state_dict())
-        self.target_net2.load_state_dict(self.online_net2.state_dict())
-
     def board_to_state(self, board):
         return self.board_logic.board_to_state(board).to(config.device)
 
@@ -126,13 +123,13 @@ class Agent(nn.Module):
         return torch.tensor(self.board_logic.move_to_action(move), dtype=torch.long, device=config.device)
 
     def get_mask_legal(self, legal_moves):
-        mask_legal = torch.zeros(1, 76*64, dtype=torch.bool)
+        mask_legal = torch.zeros(1, 76*64, dtype=torch.bool, device=config.device)
 
         action = torch.tensor([self.board_logic.move_to_action(m) for m in legal_moves], 
-                            dtype=torch.long)
-        mask_legal[0, action] = 1
+                            dtype=torch.long, device=config.device)
+        mask_legal[0, action] = True
 
-        return mask_legal.to(config.device)
+        return mask_legal
     
     def get_diff_Q(self, state, mask_legal):
         with torch.no_grad():
@@ -231,7 +228,7 @@ class BoardLogic:
         move = [self.xy_to_square(x, y), self.xy_to_square(x+dx, y+dy)]
 
         if len(delta) == 3:  # promotion
-            move.append(delta[2]-1)
+            move.append(delta[2])
 
         return chess.Move(*move)
     
