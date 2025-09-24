@@ -8,28 +8,6 @@ import cmath
 import config
 import chess
 
-
-class NN(nn.Module):
-
-    def __init__(self):
-        super(NN, self).__init__()
-        size = 4096
-        #self.conv1 = nn.Conv2d(12, 128, kernel_size=5, padding=2)
-        #self.conv2 = nn.Conv2d(128, 128, kernel_size=5, padding=2)
-        self.fc1 = nn.Linear(12*8*8, size)
-        self.fc2 = nn.Linear(size, size)
-        self.fc3 = nn.Linear(size, size)
-        self.fc4 = nn.Linear(size, 64*76)
-
-    def forward(self, x):
-        x = x.float()
-        x = x.reshape(x.size(0), -1)
-        x = F.selu(self.fc1(x))
-        x = F.selu(self.fc2(x))
-        x = F.selu(self.fc3(x))
-        return self.fc4(x)
-    
-
 class ConvResBlock(nn.Module):
 
     def __init__(self, ch):
@@ -122,7 +100,7 @@ class Agent(nn.Module):
             
             Q = self.forward(state_tensor)
             
-            Q_legal = Q.masked_fill(~mask_legal, -float('inf'))
+            Q_legal = Q.masked_fill(~mask_legal, -1e9)
             max_q = Q_legal.max(dim=1, keepdim=True).values
             logits = (Q_legal - max_q)/temp
 
@@ -148,7 +126,7 @@ class Agent(nn.Module):
         return torch.tensor(self.board_logic.move_to_action(move), dtype=torch.long, device=config.device)
 
     def get_mask_legal(self, legal_moves):
-        mask_legal = torch.zeros(1, 64*76, dtype=torch.bool)
+        mask_legal = torch.zeros(1, 76*64, dtype=torch.bool)
 
         action = torch.tensor([self.board_logic.move_to_action(m) for m in legal_moves], 
                             dtype=torch.long)

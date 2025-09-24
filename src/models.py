@@ -188,13 +188,13 @@ class Model:
 
         with torch.no_grad():
             Q_next = online_net(next_state_batch)
-            Q_next = Q_next.masked_fill(~mask_legal_batch, -float('inf'))
+            Q_next = Q_next.masked_fill(~mask_legal_batch, -1e9)
             action_star = Q_next.argmax(1, keepdim=True)
         
             next_state_values = target_net(next_state_batch).gather(1, action_star)
-            next_state_values = next_state_values.clamp(-1.0, 1.0)
+            next_state_values = (1 - done_batch)*next_state_values
 
-            expected_state_action_values = reward_batch + self.gamma*(1 - done_batch)*next_state_values
+            expected_state_action_values = reward_batch + self.gamma*next_state_values
 
         loss = self.criterion(state_action_values, expected_state_action_values)
         return loss, opt
