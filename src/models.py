@@ -69,7 +69,7 @@ class TemperatureScaler:
         temp_max = self.temp_start + (self.temp_end - self.temp_start) * self.counter_episode/ self.episode_decay
         temp_max = min(self.temp_end, temp_max)
 
-        temp = np.exp(random.uniform(np.log(self.temp_min), np.log(temp_max)))
+        temp = random.uniform(self.temp_min, temp_max)
         temp *= self.transition_decay ** self.counter_transition
         return max(self.temp_min, temp)
 
