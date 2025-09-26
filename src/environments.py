@@ -15,8 +15,10 @@ class Environment:
 
     def __init__(self,
                  max_num_moves=None,
+                 filter_blunder=False
                 ):
         self.max_num_moves = max_num_moves
+        self.filter_blunder = filter_blunder
 
         self.board = chess.Board()
         self.episode_count = 0
@@ -27,8 +29,11 @@ class Environment:
         if self.board.is_checkmate():
             done = True
             reward = 1
-        elif len(self.get_legal_moves()) == 0 or self.move_count >= self.max_num_moves:
-            # draw   
+        elif self.board.is_stalemate() or \
+             self.board.is_insufficient_material() or \
+             self.board.is_repetition(3) or \
+             self.move_count >= self.max_num_moves:
+            # draw
             done = True
             reward = 0
         else:
@@ -50,27 +55,56 @@ class Environment:
         self.mirror = False
         self.move_count = 0
         self.board = chess.Board()
-        return deepcopy(self.board)
-    
+        return self.board
+
     def get_board(self):
-        return deepcopy(self.board) if not self.mirror else self.board.mirror()
+        return self.board if not self.mirror else self.board.mirror()
 
     def get_legal_moves(self):
-        legal_moves = []
-        for m in self.board.legal_moves:
-            self.board.push(m)
-            if not self.board.is_repetition(3):
-                legal_moves.append(m)
-            self.board.pop()
+        legal_moves = list(self.board.legal_moves)
+
+        legal_moves = self.filter_repeated_moves(legal_moves)
+        if self.filter_blunder:
+            legal_moves = self.filter_blunder_moves(legal_moves)
 
         if self.mirror:
             legal_moves = [flip_move(m) for m in legal_moves]
 
         return legal_moves
     
+    def filter_repeated_moves(self, legal_moves):
+        filtered_moves = []
+        for m in legal_moves:
+            self.board.push(m)
+            if not self.board.is_repetition(3):
+                filtered_moves.append(m)
+            self.board.pop()
+        return filtered_moves
+    
+    def filter_blunder_moves(self, legal_moves):
+        filtered_moves = []
+        for m in legal_moves:
+            self.board.push(m)
+            if not self.checkmate_in_one(self.board):
+                filtered_moves.append(m)
+            self.board.pop()
+        return filtered_moves
+    
+    def checkmate_in_one(self, board):
+        push, pop = board.push, board.pop
+        gives_check = board.gives_check
+        for m in board.legal_moves:
+            if not gives_check(m):
+                continue
+            push(m)
+            if board.is_checkmate():
+                pop()
+                return True
+            pop()
+        return False
+    
 
-def flip_move(move: chess.Move) -> chess.Move:
-    """Flips a chess.Move object to correspond to a mirrored board."""
+def flip_move(move):
     from_square_flipped = chess.square_mirror(move.from_square)
     to_square_flipped = chess.square_mirror(move.to_square)
     

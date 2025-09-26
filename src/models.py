@@ -10,6 +10,7 @@ from environments import *
 from copy import deepcopy
 from collections import deque
 import random
+from IPython.display import display, update_display
 
 
 
@@ -147,7 +148,7 @@ class Model:
 
             self.temp_scaler.step_episode()
 
-            if (i_episode + 1) % freq == 0:
+            if i_episode % freq == 0:
                 self.stats(evaluate_agents, loss)
                 
 
@@ -297,11 +298,9 @@ class EvaluateAgents:
         if random.random() < 0.5:
             white = self.agent1
             black = self.agent2
-            one_starts = True
         else:
             white = self.agent2
             black = self.agent1
-            one_starts = False
 
         done = False
         temp = self.temp
@@ -317,10 +316,9 @@ class EvaluateAgents:
             _, (reward, done) = self.environment.step(move)
 
             if done:
-                if reward.item() == 1:
+                if reward.item() != 0:
                     # Terminal reward is for the mover who just played
-                    winner = mover
-                    return 1 if winner is self.agent1 else -1
+                    return reward.item() if mover is self.agent1 else -reward.item()
                 else:
                     return 0  # draw
 
@@ -336,3 +334,68 @@ class EvaluateAgents:
             results[result] += 1
 
         return results
+    
+
+
+class User:
+    def __init__(self):
+        self.board_logic = BoardLogic()
+
+    def select_action(self, environment, temp=None, greedy=False):
+        legal_moves = environment.get_legal_moves()
+        move = None
+        while move not in legal_moves:
+            move = chess.Move.from_uci(input("Enter your move: "))
+            if move not in legal_moves:
+                print("Invalid move. Please try again.")
+        action = self.board_logic.move_to_action(move)
+        return action
+
+
+class AgentVsUser:
+    def __init__(self, agent, environment, temp, greedy=True):
+        self.agent = agent
+        self.environment = environment
+        self.temp = temp
+        self.greedy = greedy
+
+    def play_game(self, user_start):
+        board = self.environment.reset()
+        
+
+        user = User()
+        if user_start:
+            white = user
+            black = self.agent
+        else:
+            white = self.agent
+            black = user
+
+        h = display(board, display_id=True)
+
+
+        done = False
+        temp = self.temp
+        ply = 0
+        while not done:
+
+            mover = white if (ply % 2 == 0) else black
+
+            action = mover.select_action(self.environment, temp=temp, greedy=self.greedy)
+            temp *= 0.95
+
+            move = mover.board_logic.action_to_move(action)
+            _, (reward, done) = self.environment.step(move)
+
+            update_display(self.environment.board, display_id=h.display_id)
+
+            if done:
+                if reward.item() == 1:
+                    winner = mover
+                    return 1 if winner is self.agent else -1
+                else:
+                    return 0  # draw
+
+            ply += 1
+
+        return 0               # draw due to max moves reached

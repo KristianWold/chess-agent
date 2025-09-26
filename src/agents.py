@@ -88,6 +88,9 @@ class Agent(nn.Module):
         board = environment.get_board()
         legal_moves = environment.get_legal_moves()
 
+        if len(legal_moves) == 0:
+            return self.move_to_action(list(board.legal_moves)[0])
+
         for m in legal_moves:
             board.push(m)
             if board.is_checkmate():
@@ -139,7 +142,7 @@ class Agent(nn.Module):
             Q1_legal = Q1[mask_legal]
             Q2_legal = Q2[mask_legal]
 
-            diff = 2*torch.abs(Q1_legal - Q2_legal)/(torch.abs(Q1_legal) + torch.abs(Q2_legal))
+            diff = torch.abs(Q1_legal - Q2_legal)
             diff = diff.mean().cpu().item()
 
         return diff
@@ -220,6 +223,7 @@ class BoardLogic:
 
 
     def action_to_move(self, action):
+        action = int(action)
         origin, delta = action//len(self.move_dict), action%len(self.move_dict)
         x = origin % 8
         y = origin // 8
