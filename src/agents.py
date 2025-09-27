@@ -38,20 +38,9 @@ class ConvNN(nn.Module):
         self.blocks = nn.Sequential(*blocks)
         self.head_q = nn.Conv2d(ch, 76, 1)
 
-        rank = torch.linspace(-1, 1, 8).view(1,1,8,1).expand(1,1,8,8)  # [1,1,8,8]
-        file = torch.linspace(-1, 1, 8).view(1,1,1,8).expand(1,1,8,8)  # [1,1,8,8]
-        self.register_buffer("rank_plane", rank)
-        self.register_buffer("file_plane", file)
-
 
     def forward(self, x):
-        x = x.float()
         b = x.size(0)
-
-        r_plane = self.rank_plane.expand(b, -1, -1, -1).to(dtype=x.dtype)
-        f_plane = self.file_plane.expand(b, -1, -1, -1).to(dtype=x.dtype)
-        x = torch.cat([x, r_plane, f_plane], dim=1)
-
         x = F.silu(self.stem(x))
         x = self.blocks(x)
         return self.head_q(x).view(b, -1)
@@ -79,7 +68,7 @@ class Agent(nn.Module):
         self.target_net2.load_state_dict(self.online_net2.state_dict())
         self.target_net2.eval()
 
-    def forward(self, state_tensor, network_id=None):
+    def forward(self, state_tensor):
         Q1 = self.online_net1(state_tensor)
         Q2 = self.online_net2(state_tensor)
         return (Q1 + Q2) / 2
@@ -88,10 +77,12 @@ class Agent(nn.Module):
         board = environment.get_board()
         legal_moves = environment.get_legal_moves()
 
-        if len(legal_moves) == 0:
-            return self.move_to_action(list(board.legal_moves)[0])
+        if len(legal_moves) == 0: # no legal moves due to blunder filter
+            legal_moves = environment.get_legal_moves(include_blunders=True)
+            move = random.choice(legal_moves) # forced to pick a random blunder
+            return self.move_to_action(move)
 
-        for m in legal_moves:
+        for m in legal_moves: # immediate checkmate
             board.push(m)
             if board.is_checkmate():
                 board.pop()
@@ -105,8 +96,8 @@ class Agent(nn.Module):
             Q = self.forward(state_tensor)
             
             Q_legal = Q.masked_fill(~mask_legal, -1e4)
-            max_q = Q_legal.max(dim=1, keepdim=True).values
-            logits = (Q_legal - max_q)/temp
+            Q_max = Q_legal.max(dim=1, keepdim=True).values
+            logits = (Q_legal - Q_max)/temp
 
             if greedy:
                 action = logits.argmax(1, keepdim=True)
@@ -184,7 +175,8 @@ def make_move_dict():
 
 class BoardLogic:
 
-    def __init__(self):
+    def __init__(self, max_num_moves=100):
+        self.max_num_moves = max_num_moves
         self.board = chess.Board()
         self.unique_pieces = sorted(set(str(self.board).replace("\n", "").replace(" ", "")))
         self.piece_to_idx = {p: i for i, p in enumerate(self.unique_pieces)}
@@ -195,10 +187,33 @@ class BoardLogic:
 
         state = [row.split(" ") for row in str(board).split("\n")]
         state = [[self.piece_to_idx[p] for p in row] for row in state]
-        state_onehot = F.one_hot(torch.tensor(state), num_classes=len(self.unique_pieces)).to(torch.bool).permute(2, 0, 1)
-        state_onehot = state_onehot[1:].unsqueeze(0)
+        state = F.one_hot(torch.tensor(state), num_classes=len(self.unique_pieces)).to(torch.float).permute(2, 0, 1)
+        state = state[1:].unsqueeze(0)
 
-        return state_onehot.to(config.device)
+        plane_en_passant = torch.zeros(1, 1, 8, 8, dtype=torch.float)
+        ep = board.ep_square
+        if ep is not None:
+            x, _ = self.square_to_xy(ep)
+            plane_en_passant[0, 0, :, x] = 1.0
+
+        state = torch.cat([state, plane_en_passant], dim=1)
+
+        plane_castling_kingside = torch.full((1, 1, 8, 8), 
+                                             board.has_kingside_castling_rights(chess.WHITE), 
+                                             dtype=torch.float)
+        plane_castling_queenside = torch.full((1, 1, 8, 8), 
+                                              board.has_queenside_castling_rights(chess.WHITE), 
+                                              dtype=torch.float)
+        state = torch.cat([state, plane_castling_kingside, plane_castling_queenside], dim=1)
+
+        plane_rank = torch.linspace(-1, 1, 8).view(1,1,8,1).expand(1,1,8,8)
+        plane_file = torch.linspace(-1, 1, 8).view(1,1,1,8).expand(1,1,8,8)  
+        state = torch.cat([state, plane_rank, plane_file], dim=1)
+
+        plane_move_count = torch.full((1, 1, 8, 8), board.fullmove_number / self.max_num_moves, dtype=torch.float)
+        state = torch.cat([state, plane_move_count], dim=1)
+
+        return state.to(config.device)
 
     def move_get_origin(self, move):
         x, y = self.square_to_xy(move.from_square)

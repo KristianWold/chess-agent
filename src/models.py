@@ -1,3 +1,4 @@
+from mimetypes import init
 import numpy as np
 import random
 import torch
@@ -15,18 +16,19 @@ from IPython.display import display, update_display
 
 
 class ReplayMemory():
-    def __init__(self, capacity, batch_size):
+    def __init__(self, capacity, batch_size, init_mem = True):
         self.capacity = capacity
         self.batch_size = batch_size
 
-        self.states = torch.zeros(capacity, 12, 8, 8, dtype = torch.bool)
-        self.actions = torch.zeros(capacity, 1, dtype = torch.int64)
-        self.next_states = torch.zeros(capacity, 12, 8, 8, dtype = torch.bool)
-        self.mask_legal = torch.zeros(capacity, 64*76, dtype = torch.bool)
-        self.rewards = torch.zeros(capacity, 1, dtype = torch.float32)
-        self.done = torch.zeros(capacity, 1, dtype = torch.float32)
+        self.states = torch.zeros(capacity, 18, 8, 8, dtype = torch.float32) if init_mem else None
+        self.actions = torch.zeros(capacity, 1, dtype = torch.int64) if init_mem else None
+        self.next_states = torch.zeros(capacity, 18, 8, 8, dtype = torch.float32) if init_mem else None
+        self.mask_legal = torch.zeros(capacity, 64*76, dtype = torch.bool) if init_mem else None
+        self.rewards = torch.zeros(capacity, 1, dtype = torch.float32) if init_mem else None
+        self.done = torch.zeros(capacity, 1, dtype = torch.float32) if init_mem else None
 
-        self.data = torch.utils.data.TensorDataset(self.states, self.actions, self.next_states, self.mask_legal, self.rewards, self.done)
+        if init_mem:
+            self.init()
 
         self.index = 0
         self.num_samples = 0
@@ -49,6 +51,9 @@ class ReplayMemory():
         idx = torch.randperm(self.num_samples)[:self.batch_size]
         batch = [b.to(config.device) for b in self.data[idx]]
         return batch
+    
+    def init(self):
+        self.data = torch.utils.data.TensorDataset(self.states, self.actions, self.next_states, self.mask_legal, self.rewards, self.done)
 
 class TemperatureScaler:
     def __init__(self, temp_start, temp_end, temp_min, episode_decay, transition_decay):
@@ -80,6 +85,7 @@ class Model:
                  agent=None,
                  environment=None,
                  mem_capacity=None,
+                 init_mem = True,
                  batch_size=None,
                  num_warmup=None,
                  policy_update=None,
@@ -103,10 +109,8 @@ class Model:
         self.gamma = 1 - 1/a
         self.criterion = criterion
         
-
         self.counter_episode = 0
-        
-        self.memory = ReplayMemory(mem_capacity, batch_size)
+        self.memory = ReplayMemory(mem_capacity, batch_size, init_mem=init_mem)
 
         self.opt_list = opt_list
         self.scaler = scaler
@@ -245,29 +249,60 @@ class Model:
 
 
         
-def save_checkpoint(model, filename='checkpoint.pth'):
+def save_core(model, filename='checkpoint.pth'):
     checkpoint = {
         'model_state_dict': model.agent.state_dict(),
         'optimizer1_state_dict': model.opt_list[0].state_dict(),
         'optimizer2_state_dict': model.opt_list[1].state_dict(),
-        'memory': model.memory,
         'counter_episode': model.counter_episode,
     }
     torch.save(checkpoint, filename)
 
+def save_memory(model, filename='checkpoint.pth'):
+    memory = model.memory
+    checkpoint = {
+        "states": memory.states,
+        "actions": memory.actions,
+        "next_states": memory.next_states,
+        "mask_legal": memory.mask_legal,
+        "rewards": memory.rewards,
+        "done": memory.done,
+        "index": memory.index,
+        "num_samples": memory.num_samples,
+        "capacity": memory.capacity,
+        "batch_size": memory.batch_size
+    }
+    torch.save(checkpoint, filename)
 
-def load_checkpoint(filename, model):
-    checkpoint = torch.load(filename, weights_only=False)
+
+def load_checkpoint(core_path=None, 
+                    memory_path=None, 
+                    model=None):
+    checkpoint = torch.load(core_path, map_location="cpu", weights_only=False)
     model.agent.load_state_dict(checkpoint['model_state_dict'])
     
     model.opt_list[0].load_state_dict(checkpoint['optimizer1_state_dict'])
     model.opt_list[1].load_state_dict(checkpoint['optimizer2_state_dict'])
 
-    model.memory = checkpoint['memory']
-
     model.counter_episode = checkpoint['counter_episode']
 
+    if not memory_path is None:
+        memory = torch.load(memory_path, map_location="cpu", weights_only=False)
+        model.memory.states = memory['states']
+        model.memory.actions = memory['actions']
+        model.memory.next_states = memory['next_states']
+        model.memory.mask_legal = memory['mask_legal']
+        model.memory.rewards = memory['rewards']
+        model.memory.done = memory['done']
+        model.memory.index = memory['index']
+        model.memory.num_samples = memory['num_samples']
+        model.memory.capacity = memory['capacity']
+        model.memory.batch_size = memory['batch_size']
+
+        model.memory.init()
+
     return model
+
 
 def group_decay_parameters(model, weight_decay=0.01, no_decay=['bias', 'GroupNorm.weight']):
     """

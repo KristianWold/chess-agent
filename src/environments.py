@@ -22,17 +22,15 @@ class Environment:
 
         self.board = chess.Board()
         self.episode_count = 0
-        self.move_count = 0
         self.mirror = False
 
     def get_reward_and_done(self):
         if self.board.is_checkmate():
             done = True
             reward = 1
-        elif self.board.is_stalemate() or \
+        elif self.get_legal_moves(include_blunders=True) == [] or \
              self.board.is_insufficient_material() or \
-             self.board.is_repetition(3) or \
-             self.move_count >= self.max_num_moves:
+             self.board.fullmove_number >= self.max_num_moves:
             # draw
             done = True
             reward = 0
@@ -43,7 +41,6 @@ class Environment:
         return torch.tensor(reward, dtype=torch.float, device=config.device).view(1,1), bool(done)
 
     def step(self, move):
-        self.move_count += 1
         if self.mirror:
             move = flip_move(move)
         self.board.push(move)
@@ -53,18 +50,17 @@ class Environment:
     def reset(self):
         self.episode_count += 1
         self.mirror = False
-        self.move_count = 0
         self.board = chess.Board()
         return self.board
 
     def get_board(self):
         return self.board if not self.mirror else self.board.mirror()
 
-    def get_legal_moves(self):
+    def get_legal_moves(self, include_blunders=False):
         legal_moves = list(self.board.legal_moves)
 
         legal_moves = self.filter_repeated_moves(legal_moves)
-        if self.filter_blunder:
+        if self.filter_blunder and not include_blunders:
             legal_moves = self.filter_blunder_moves(legal_moves)
 
         if self.mirror:
