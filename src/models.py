@@ -120,7 +120,12 @@ class Model:
         counter = 0
         loss = 0
         diff = 0
+
+
         for i_episode in tqdm(range(num_episodes)):
+            if i_episode % freq == 0:
+                self.stats(evaluate_agents, loss)
+
             board = self.environment.reset()
             state = self.agent.board_to_state(board)
             self.counter_episode += 1
@@ -151,9 +156,6 @@ class Model:
                 self.temp_scaler.step_transition()
 
             self.temp_scaler.step_episode()
-
-            if i_episode % freq == 0:
-                self.stats(evaluate_agents, loss)
                 
 
     @torch.compile(mode="reduce-overhead", fullgraph=True, dynamic=False)
@@ -232,18 +234,20 @@ class Model:
 
     def stats(self, evaluate_agents, loss):
         results = evaluate_agents.evaluate(verbose=False)
+        if self.memory.num_samples < self.num_warmup:
+            print(results, loss, 0)
+            return None
+
         transitions = self.memory.sample()
-        diff = 0
-        if transitions is not None:
-            _, _, next_state_batch, mask_legal_batch, _, _ = transitions
-            state_next_batch = next_state_batch
-            mask_legal_batch = mask_legal_batch
-            diff_list = []
-            for state_next, mask_legal in zip(state_next_batch, mask_legal_batch):
-                if mask_legal.sum() != 0:    
-                    diff = self.agent.get_diff_Q(state_next.unsqueeze(0), mask_legal.unsqueeze(0))
-                    diff_list.append(diff)
-            diff = np.mean(diff_list)
+        _, _, next_state_batch, mask_legal_batch, _, _ = transitions
+        state_next_batch = next_state_batch
+        mask_legal_batch = mask_legal_batch
+        diff_list = []
+        for state_next, mask_legal in zip(state_next_batch, mask_legal_batch):
+            if mask_legal.sum() != 0:    
+                diff = self.agent.get_diff_Q(state_next.unsqueeze(0), mask_legal.unsqueeze(0))
+                diff_list.append(diff)
+        diff = np.mean(diff_list)
 
         print(results, loss, diff)
 
@@ -397,7 +401,6 @@ class AgentVsUser:
     def play_game(self, user_start):
         board = self.environment.reset()
         
-
         user = User()
         if user_start:
             white = user
@@ -408,13 +411,31 @@ class AgentVsUser:
 
         h = display(board, display_id=True)
 
-
         done = False
         temp = self.temp
         ply = 0
         while not done:
 
             mover = white if (ply % 2 == 0) else black
+            if mover is user:
+                state = self.agent.board_logic.board_to_state(board).to(config.device)
+
+                Q1 = self.agent.online_net1(state).detach()
+                Q2 = self.agent.online_net2(state).detach()
+                legal_moves = self.environment.get_legal_moves()
+                mask_legal = self.agent.get_mask_legal(legal_moves)
+
+                Q1_legal = Q1[mask_legal]
+                Q2_legal = Q2[mask_legal]
+
+                Q1_legal = Q1.masked_fill(~mask_legal, -1e9)
+                Q2_legal = Q2.masked_fill(~mask_legal, -1e9)
+                action_star1 = torch.argmax(Q1_legal, dim=1).to(config.device)
+                action_star2 = torch.argmax(Q2_legal, dim=1).to(config.device)
+                score1 = Q1[0,action_star1[0]].item()
+                score2 = Q2[0,action_star2[0]].item()
+
+                print(f"Score is {(score1 + score2)/2:.3f} +- {np.abs(score1 - score2):.3f}", end='\r', flush=True)
 
             action = mover.select_action(self.environment, temp=temp, greedy=self.greedy)
             temp *= 0.95
