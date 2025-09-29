@@ -198,13 +198,13 @@ class BoardLogic:
 
         state = torch.cat([state, plane_en_passant], dim=1)
 
-        plane_castling_kingside = torch.full((1, 1, 8, 8), 
-                                             board.has_kingside_castling_rights(chess.WHITE), 
-                                             dtype=torch.float)
-        plane_castling_queenside = torch.full((1, 1, 8, 8), 
-                                              board.has_queenside_castling_rights(chess.WHITE), 
-                                              dtype=torch.float)
-        state = torch.cat([state, plane_castling_kingside, plane_castling_queenside], dim=1)
+        rights_list = [board.has_kingside_castling_rights(chess.WHITE), 
+                       board.has_queenside_castling_rights(chess.WHITE),
+                       board.has_kingside_castling_rights(chess.BLACK),
+                       board.has_queenside_castling_rights(chess.BLACK)]
+        
+        plane_rights_list = [torch.full((1, 1, 8, 8), right, dtype=torch.float) for right in rights_list]
+        state = torch.cat([state] + plane_rights_list, dim=1)
 
         plane_rank = torch.linspace(-1, 1, 8).view(1,1,8,1).expand(1,1,8,8)
         plane_file = torch.linspace(-1, 1, 8).view(1,1,1,8).expand(1,1,8,8)  
