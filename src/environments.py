@@ -41,9 +41,10 @@ class Environment:
         return torch.tensor(reward, dtype=torch.float, device=config.device).view(1,1), bool(done)
 
     def step(self, move):
-        if self.mirror:
-            move = flip_move(move)
-        self.board.push(move)
+        if move is not None:
+            if self.mirror:
+                move = flip_move(move)
+            self.board.push(move)
         self.mirror = not self.mirror
         return self.get_board(), self.get_reward_and_done()
 

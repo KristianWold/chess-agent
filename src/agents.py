@@ -46,16 +46,46 @@ class ConvNN(nn.Module):
         return self.head_q(x).view(b, -1)
 
 
+def boltzmann_policy(logits, temp=1):
+    dist = torch.distributions.Categorical(logits=logits/temp)
+    action = dist.sample().view(-1,1)   
+    return action
+
+def eps_greedy_policy(logits, temp=0.1, illegal_floor=-1e5):
+    x = logits.squeeze(0)
+    if random.random() < temp:
+        idx = torch.nonzero(x > (illegal_floor / 10), as_tuple=True)[0]
+        a = idx[torch.randint(idx.numel(), (1,), device=idx.device)]
+    else:
+        a = x.argmax()
+    return a.view(1,1)
+
+def eps_softmax_policy(logits, temp=0.1):
+    logits = logits.squeeze(0).clone()
+    m = torch.argmax(logits)
+    if random.random() < temp:
+        logits[m] = float("-inf")
+        if not torch.isfinite(logits).any():
+            logits[m] = 0 # forced to pick the max if all other moves are -inf
+        action = torch.distributions.Categorical(logits=logits).sample()
+    else:
+        action = m
+
+    return action.view(-1,1)
+
+
 class Agent(nn.Module):
 
     def __init__(self,
                  board_logic=None,
                  in_ch=14, 
                  ch=128, 
-                 n_blocks=8):
+                 n_blocks=8,
+                 sample_policy=None):
         super(Agent, self).__init__()
 
         self.board_logic = board_logic
+        self.sample_policy = sample_policy
 
         self.online_net1 = ConvNN(in_ch, ch, n_blocks).to(config.device)
         self.online_net2 = ConvNN(in_ch, ch, n_blocks).to(config.device)
@@ -95,15 +125,14 @@ class Agent(nn.Module):
             
             Q = self.forward(state_tensor)
             
-            Q_legal = Q.masked_fill(~mask_legal, -1e4)
+            Q_legal = Q.masked_fill(~mask_legal, float("-inf"))
             Q_max = Q_legal.max(dim=1, keepdim=True).values
-            logits = (Q_legal - Q_max)/temp
+            logits = (Q_legal - Q_max)
 
             if greedy:
                 action = logits.argmax(1, keepdim=True)
             else:
-                dist = torch.distributions.Categorical(logits=logits)
-                action = dist.sample().view(-1,1)   
+                action = self.sample_policy(logits, temp=temp)
 
             return action
 

@@ -20,9 +20,9 @@ class ReplayMemory():
         self.capacity = capacity
         self.batch_size = batch_size
 
-        self.states = torch.zeros(capacity, 18, 8, 8, dtype = torch.float32) if init_mem else None
+        self.states = torch.zeros(capacity, 20, 8, 8, dtype = torch.float32) if init_mem else None
         self.actions = torch.zeros(capacity, 1, dtype = torch.int64) if init_mem else None
-        self.next_states = torch.zeros(capacity, 18, 8, 8, dtype = torch.float32) if init_mem else None
+        self.next_states = torch.zeros(capacity, 20, 8, 8, dtype = torch.float32) if init_mem else None
         self.mask_legal = torch.zeros(capacity, 64*76, dtype = torch.bool) if init_mem else None
         self.rewards = torch.zeros(capacity, 1, dtype = torch.float32) if init_mem else None
         self.done = torch.zeros(capacity, 1, dtype = torch.float32) if init_mem else None
@@ -62,7 +62,9 @@ class TemperatureScaler:
         self.temp_min = temp_min
         self.episode_decay = episode_decay
         self.transition_decay = transition_decay
-        self.counter_episode = 0
+        self.counter_episode = -1
+        self.step_episode()
+
         self.counter_transition = 0
 
     def step_episode(self):
@@ -70,16 +72,18 @@ class TemperatureScaler:
         self.counter_transition = 0
         self.transition_decay_current = random.uniform(self.transition_decay, 1.0)
 
+        temp_max = self.temp_start + (self.temp_end - self.temp_start) * self.counter_episode/ self.episode_decay
+        temp_max = max(self.temp_end, temp_max)
+
+        self.temp_current = random.uniform(self.temp_min, temp_max)
+
     def step_transition(self):
         self.counter_transition += 1
 
     def get_temp(self):
-        temp_max = self.temp_start + (self.temp_end - self.temp_start) * self.counter_episode/ self.episode_decay
-        temp_max = min(self.temp_end, temp_max)
-
-        temp = random.uniform(self.temp_min, temp_max)
-        temp *= self.transition_decay_current ** self.counter_transition
+        temp = self.temp_current*self.transition_decay_current ** self.counter_transition
         return max(self.temp_min, temp)
+
 
 class Model:
 
@@ -123,7 +127,7 @@ class Model:
         loss = 0
 
         for i_episode in tqdm(range(num_episodes)):
-            if i_episode % freq == 0:
+            if (i_episode +1) % freq == 0:
                 self.stats(evaluate_agents, loss)
 
             board = self.environment.reset()
@@ -321,7 +325,6 @@ class EvaluateAgents:
             results[result] += 1
 
         return results
-    
 
 
 class User:
@@ -329,7 +332,7 @@ class User:
         self.board_logic = BoardLogic()
 
     def select_action(self, environment, temp=None, greedy=False):
-        legal_moves = environment.get_legal_moves()
+        legal_moves = environment.get_legal_moves(include_blunders=True)
         move = None
         while move not in legal_moves:
             move = chess.Move.from_uci(input("Enter your move: "))
@@ -347,8 +350,8 @@ class AgentVsUser:
         self.greedy = greedy
 
     def play_game(self, user_start):
-        board = self.environment.reset()
-        
+        #board = self.environment.reset()
+        board =  self.environment.board
         user = User()
         if user_start:
             white = user
@@ -391,7 +394,11 @@ class AgentVsUser:
             move = mover.board_logic.action_to_move(action)
             _, (reward, done) = self.environment.step(move)
 
-            update_display(self.environment.board, display_id=h.display_id)
+            if user_start:
+                board = self.environment.board
+            else:
+                board = self.environment.board.mirror()
+            update_display(board, display_id=h.display_id)
 
             if done:
                 if reward.item() == 1:
