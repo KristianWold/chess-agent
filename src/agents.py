@@ -8,6 +8,10 @@ import cmath
 import config
 import chess
 
+from tqdm import tqdm
+
+from copy import deepcopy
+
 class ConvResBlock(nn.Module):
 
     def __init__(self, ch):
@@ -135,6 +139,50 @@ class Agent(nn.Module):
                 action = self.sample_policy(logits, temp=temp)
 
             return action
+        
+    def q_expand(self, environment, depth, breadth, top_level=True):
+        board = environment.get_board()
+        legal_moves = environment.get_legal_moves()
+
+        if len(legal_moves) == 0: # no legal moves due to blunder filter
+            legal_moves = environment.get_legal_moves(include_blunders=True)
+            move = random.choice(legal_moves) # forced to pick a random blunder
+            return -1, self.move_to_action(move)
+
+        for m in legal_moves: # immediate checkmate
+            board.push(m)
+            if board.is_checkmate():
+                board.pop()
+                return 1, self.move_to_action(m)
+            board.pop()
+
+        with torch.no_grad():
+            state_tensor = self.board_logic.board_to_state(board).to(config.device)
+            mask_legal = self.get_mask_legal(legal_moves).squeeze(0)
+            
+            Q = self.forward(state_tensor).squeeze(0)
+            Q_legal = Q.masked_fill(~mask_legal, float("-inf"))
+
+            values, actions = Q_legal.topk(breadth)
+            values = values
+            actions = actions
+
+            if depth > 1:
+                for i, (v, a) in enumerate(zip(values, actions)):
+                    if v < -1e4:  # skip illegal moves
+                        continue
+
+                    move = self.action_to_move(a)
+                    env_copy = deepcopy(environment)
+                    _, _ = env_copy.step(move)
+                    q_, a_ = self.q_expand(env_copy, depth-1, breadth)
+                    values[i] = -q_
+
+        Q_legal[actions] = values
+        Q_legal = Q_legal.unsqueeze(0)
+
+        q, action = Q_legal.max(dim=1, keepdim=True)
+        return q, action
 
     def board_to_state(self, board):
         return self.board_logic.board_to_state(board).to(config.device)

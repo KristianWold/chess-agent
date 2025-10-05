@@ -349,7 +349,7 @@ class AgentVsUser:
         self.temp = temp
         self.greedy = greedy
 
-    def play_game(self, user_start):
+    def play_game(self, user_start, depth=2, breadth=2):
         #board = self.environment.reset()
         board =  self.environment.board
         user = User()
@@ -388,7 +388,10 @@ class AgentVsUser:
 
                 print(f"Score is {(score1 + score2)/2:.3f} +- {np.abs(score1 - score2):.3f}", end='\r', flush=True)
 
-            action = mover.select_action(self.environment, temp=temp, greedy=self.greedy)
+            if mover is user:
+                action = mover.select_action(self.environment, temp=temp, greedy=self.greedy)
+            else:
+                _, action = mover.q_expand(self.environment, depth=depth, breadth=breadth)
             temp *= 0.95
 
             move = mover.board_logic.action_to_move(action)
