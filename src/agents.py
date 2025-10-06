@@ -174,11 +174,14 @@ class Agent(nn.Module):
 
                     move = self.action_to_move(a)
                     env_copy = deepcopy(environment)
-                    _, _ = env_copy.step(move)
-                    q_, a_ = self.q_expand(env_copy, depth-1, breadth)
+                    _,(q_, done) = env_copy.step(move)
+                    if not done:
+                        q_, a_ = self.q_expand(env_copy, depth-1, breadth)
                     values[i] = -q_
 
-        Q_legal[actions] = values
+                Q_legal[actions] = values
+            
+
         Q_legal = Q_legal.unsqueeze(0)
 
         q, action = Q_legal.max(dim=1, keepdim=True)
