@@ -140,7 +140,7 @@ class Agent(nn.Module):
 
             return action
         
-    def q_expand(self, environment, depth, breadth, top_level=True):
+    def q_expand(self, environment, depth, breadth, top_level=True, is_opponent=False):
         board = environment.get_board()
         legal_moves = environment.get_legal_moves()
 
@@ -162,8 +162,11 @@ class Agent(nn.Module):
             
             Q = self.forward(state_tensor).squeeze(0)
             Q_legal = Q.masked_fill(~mask_legal, float("-inf"))
+            if is_opponent:
+                values, actions = Q_legal.topk(1)
+            else:
+                values, actions = Q_legal.topk(breadth)
 
-            values, actions = Q_legal.topk(breadth)
             values = values
             actions = actions
 
@@ -176,7 +179,7 @@ class Agent(nn.Module):
                     env_copy = deepcopy(environment)
                     _,(q_, done) = env_copy.step(move)
                     if not done:
-                        q_, a_ = self.q_expand(env_copy, depth-1, breadth)
+                        q_, a_ = self.q_expand(env_copy, depth-1, breadth, is_opponent=not is_opponent)
                     values[i] = -q_
 
                 Q_legal[actions] = values
