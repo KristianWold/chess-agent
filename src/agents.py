@@ -8,8 +8,6 @@ import cmath
 import config
 import chess
 
-from tqdm import tqdm
-
 from copy import deepcopy
 
 class ConvResBlock(nn.Module):
@@ -85,7 +83,7 @@ class Agent(nn.Module):
                  in_ch=14, 
                  ch=128, 
                  n_blocks=8,
-                 sample_policy=None):
+                 sample_policy=None,):
         super(Agent, self).__init__()
 
         self.board_logic = board_logic
@@ -139,8 +137,8 @@ class Agent(nn.Module):
                 action = self.sample_policy(logits, temp=temp)
 
             return action
-        
-    def q_expand(self, environment, depth, breadth, top_level=True, is_opponent=False):
+
+    def q_expand(self, environment, depth, breadth, temp=0, is_opponent=False, is_top_level=True):
         board = environment.get_board()
         legal_moves = environment.get_legal_moves()
 
@@ -162,15 +160,14 @@ class Agent(nn.Module):
             
             Q = self.forward(state_tensor).squeeze(0)
             Q_legal = Q.masked_fill(~mask_legal, float("-inf"))
-            if is_opponent:
-                values, actions = Q_legal.topk(1)
-            else:
-                values, actions = Q_legal.topk(breadth)
-
-            values = values
-            actions = actions
+            
 
             if depth > 1:
+                if is_opponent:
+                    values, actions = Q_legal.topk(breadth)
+                else:
+                    values, actions = Q_legal.topk(breadth)
+
                 for i, (v, a) in enumerate(zip(values, actions)):
                     if v < -1e4:  # skip illegal moves
                         continue
@@ -179,7 +176,11 @@ class Agent(nn.Module):
                     env_copy = deepcopy(environment)
                     _,(q_, done) = env_copy.step(move)
                     if not done:
-                        q_, a_ = self.q_expand(env_copy, depth-1, breadth, is_opponent=not is_opponent)
+                        q_, a_ = self.q_expand(env_copy, 
+                                               depth-1, 
+                                               breadth, 
+                                               is_opponent=not is_opponent,
+                                               is_top_level=False,)
                     values[i] = -q_
 
                 Q_legal[actions] = values
@@ -187,7 +188,11 @@ class Agent(nn.Module):
 
         Q_legal = Q_legal.unsqueeze(0)
 
-        q, action = Q_legal.max(dim=1, keepdim=True)
+        if is_top_level:
+            q, action = None, self.sample_policy(Q_legal, temp=temp)
+        else:
+            q, action = Q_legal.max(dim=1, keepdim=True)
+        
         return q, action
 
     def board_to_state(self, board):
