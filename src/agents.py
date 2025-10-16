@@ -154,36 +154,42 @@ class Agent(nn.Module):
 
             if depth > 1:
                 values, actions = Q_legal.topk(breadth)
+                env_next_list = []
+                done_list = []
+                q_list = []
 
                 for i, (v, a), env in enumerate(zip(values, actions, environment_list)):
-                    env_next_list = []
-
                     for v_, a_ in zip(v, a):
-                        if v_ < -1e4:  # skip illegal moves
-                            continue
-
-                        move = self.action_to_move(a_)
                         env_copy = deepcopy(env)
-                        _, (q_, done) = env_copy.step(move)
-
                         env_next_list.append(env_copy)
-                    
-
-                q, _ = self.q_expand(env_next_list, 
-                                     depth-1, 
+                        move = self.action_to_move(a_)
+                        
+                        if v_ > -1e4:
+                            _, (q_, done) = env_copy.step(move)
+                            done_list.append(done)
+                            q_list.append(q_)
+                        else:
+                            done_list.append(True) # illegal move, mark as done
+                            q_list.append(float("-inf"))
+                        
+                q, _ = self.q_expand(env_next_list,
+                                     depth-1,
                                      breadth, 
                                      temp=temp, 
                                      is_opponent=not is_opponent, 
                                      is_top_level=False)
+                
+                for i, done, q_ in zip(range(len(done_list)), done_list, q_list):
+                    if done:
+                        q[i] = q_
 
-                q = q.view(len(environment_list), breadth, -1)
-                q_min = q.min(dim=1).values  
+                q = q.view(len(environment_list), breadth)
+                q_max = q.max(dim=1).values  
 
-            Q_legal[actions] = -q_min
+                Q_legal[actions] = -q_max
+                Q_legal = Q_legal.masked_fill(~mask_legal, float("-inf"))
 
-
-
-        q, a = Q_legal.max(dim=1, keepdim=True)
+            q, a = Q_legal.max(dim=1, keepdim=True)
 
         for i, (board, legal_moves, environment) in enumerate(zip(board_list, legal_moves_list, environment_list)):
             
@@ -202,7 +208,7 @@ class Agent(nn.Module):
                     q[i] = 1
                     a[i] = self.move_to_action(m)
                 board.pop()
-                
+
         return q, a
 
     def board_to_state(self, board):
