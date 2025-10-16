@@ -138,62 +138,72 @@ class Agent(nn.Module):
 
             return action
 
-    def q_expand(self, environment, depth, breadth, temp=0, is_opponent=False, is_top_level=True):
-        board = environment.get_board()
-        legal_moves = environment.get_legal_moves()
+    def q_expand(self, environment_list, depth, breadth, temp=0, is_opponent=False, is_top_level=True):
+        board_list = [environment.get_board() for environment in environment_list]
+        state_list = [self.board_logic.board_to_state(board).to(config.device) for board in board_list]
+        legal_moves_list = [environment.get_legal_moves() for environment in environment_list]
+        mask_legal_list = [self.get_mask_legal(environment.get_legal_moves()) for environment in environment_list]
 
-        if len(legal_moves) == 0: # no legal moves due to blunder filter
-            legal_moves = environment.get_legal_moves(include_blunders=True)
-            move = random.choice(legal_moves) # forced to pick a random blunder
-            return -1, self.move_to_action(move)
-
-        for m in legal_moves: # immediate checkmate
-            board.push(m)
-            if board.is_checkmate():
-                board.pop()
-                return 1, self.move_to_action(m)
-            board.pop()
+        state = torch.cat(state_list, dim=0)
+        mask_legal = torch.cat(mask_legal_list, dim=0)
 
         with torch.no_grad():
-            state_tensor = self.board_logic.board_to_state(board).to(config.device)
-            mask_legal = self.get_mask_legal(legal_moves).squeeze(0)
-            
-            Q = self.forward(state_tensor).squeeze(0)
+            Q = self.forward(state)
             Q_legal = Q.masked_fill(~mask_legal, float("-inf"))
-            
+
 
             if depth > 1:
-                if is_opponent:
-                    values, actions = Q_legal.topk(breadth)
-                else:
-                    values, actions = Q_legal.topk(breadth)
+                values, actions = Q_legal.topk(breadth)
 
-                for i, (v, a) in enumerate(zip(values, actions)):
-                    if v < -1e4:  # skip illegal moves
-                        continue
+                for i, (v, a), env in enumerate(zip(values, actions, environment_list)):
+                    env_next_list = []
 
-                    move = self.action_to_move(a)
-                    env_copy = deepcopy(environment)
-                    _,(q_, done) = env_copy.step(move)
-                    if not done:
-                        q_, a_ = self.q_expand(env_copy, 
-                                               depth-1, 
-                                               breadth, 
-                                               is_opponent=not is_opponent,
-                                               is_top_level=False,)
-                    values[i] = -q_
+                    for v_, a_ in zip(v, a):
+                        if v_ < -1e4:  # skip illegal moves
+                            continue
 
-                Q_legal[actions] = values
+                        move = self.action_to_move(a_)
+                        env_copy = deepcopy(env)
+                        _, (q_, done) = env_copy.step(move)
+
+                        env_next_list.append(env_copy)
+                    
+
+                q, _ = self.q_expand(env_next_list, 
+                                     depth-1, 
+                                     breadth, 
+                                     temp=temp, 
+                                     is_opponent=not is_opponent, 
+                                     is_top_level=False)
+
+                q = q.view(len(environment_list), breadth, -1)
+                q_min = q.min(dim=1).values  
+
+            Q_legal[actions] = -q_min
+
+
+
+        q, a = Q_legal.max(dim=1, keepdim=True)
+
+        for i, (board, legal_moves, environment) in enumerate(zip(board_list, legal_moves_list, environment_list)):
             
+            if len(legal_moves) == 0: # no legal moves due to blunder filter
+                legal_moves = environment.get_legal_moves(include_blunders=True)
+                move = random.choice(legal_moves) # forced to pick a random blunder
 
-        Q_legal = Q_legal.unsqueeze(0)
+                q[i] = -1
+                a[i] = self.move_to_action(move)
+                continue
 
-        if is_top_level:
-            q, action = None, self.sample_policy(Q_legal, temp=temp)
-        else:
-            q, action = Q_legal.max(dim=1, keepdim=True)
-        
-        return q, action
+            for m in legal_moves: # immediate checkmate
+                board.push(m)
+                if board.is_checkmate():
+                    board.pop()
+                    q[i] = 1
+                    a[i] = self.move_to_action(m)
+                board.pop()
+                
+        return q, a
 
     def board_to_state(self, board):
         return self.board_logic.board_to_state(board).to(config.device)
